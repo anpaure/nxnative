@@ -187,4 +187,43 @@ def _render_queue_1303(ctx):
     ctx.put(site, [B(site, start)], 'optional low-latency level 3: update models, record fighters, then dispatch after scene update')
 
 
-FRAME_STEP = {'730c2141eebf9885e4857e7e50eae441': _render_queue_1303}
+def _vblank_count_1303(ctx):
+    """Keep zero-retrace intervals from manufacturing catch-up work.
+
+    The acquire helper returns max(retrace_delta - 1, 0), and the caller adds
+    one before updating its signed retrace debt. On this host a phase change
+    can produce 2/0 intervals: the 2 adds a catch-up update, but the 0 used to
+    add another retrace instead of compensating. Return delta - 1, including
+    -1 for zero, so the caller's existing add-one counts the actual delta.
+    Positive intervals, waits, error flags and render ordering are unchanged.
+    """
+    from nso_asm import B, LDRX, STRX, SUBI
+    # The 0x50-byte frame saves x25 at +0, x24/x23 at +0x10, ...;
+    # +8 is padding and remains live through the acquire waits below.
+    ctx.site(0x386f850, 'f90f1bf8f85f01a9f65702a9f44f03a9fd7b04a9fd030191')
+    site = 0x386f8d0
+    ctx.site(site, 'e8a240f9')  # ldr x8,[x23,#0x140]: previous retrace snapshot
+    start = ctx.here()
+    ctx.emit(LDRX(8, 23, 0x140 // 8))
+    ctx.emit(STRX(8, 31, 1))
+    ctx.emit(B(ctx.here(), site + 4))
+    ctx.put(site, [B(site, start)], 'retain the previous retrace count in unused stack padding')
+
+    site = 0x386f9ac
+    ctx.site(site, '604640f9')  # ldr x0,[x19,#0x88], after the original last-count store
+    start = ctx.here()
+    ctx.emit(LDRX(8, 31, 1))
+    ctx.emit(0xcb080328)  # sub x8,x25,x8: the same current snapshot the original stored
+    ctx.emit(SUBI(8, 8, 1))
+    ctx.emit(STRX(8, 21))  # missing retraces; caller adds one in w8 (including -1 -> 0)
+    ctx.emit(LDRX(0, 19, 0x88 // 8))
+    ctx.emit(B(ctx.here(), site + 4))
+    ctx.put(site, [B(site, start)], 'count zero-retrace intervals as zero in the existing catch-up debt')
+
+
+def _frame_1303(ctx):
+    _render_queue_1303(ctx)
+    _vblank_count_1303(ctx)
+
+
+FRAME_STEP = {'730c2141eebf9885e4857e7e50eae441': _frame_1303}

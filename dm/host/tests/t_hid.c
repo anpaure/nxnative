@@ -2,13 +2,15 @@
 // game's supported npad ids; no controller, window or guest exists in this test (the hid take-overs are called directly, events are recorded by the stubs)
 #include "../hle_hid.c"
 #include "../pad_slots.h"
+#include "../pad_trigger.h"
 
 static int checks, fails, g_mode = 1, g_signals;
 static void *g_signalled;
+static uint64_t g_time = 1000000000ull;
 #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
 int dm_opmode(void) { return g_mode; }
-uint64_t guest_ns(void) { return 1000000000ull; }
-uint64_t now_ns(void) { return 1000000000ull; }
+uint64_t guest_ns(void) { return g_time; }
+uint64_t now_ns(void) { return g_time; }
 uint64_t dm_guest_frame(void) { return 0; }
 void dm_touch_set(const dm_touch *t, int n) { (void)t; (void)n; }
 int touch_fill_n(void *out, int max, uint64_t now) { (void)out; (void)max; (void)now; return 0; }
@@ -146,10 +148,63 @@ static void t_vibration(void) {
     CHECK(!h_hid_VibPermit(), "disconnecting the last output disables vibration");
 }
 
+static void t_history(void) {
+    g_mode = 1; ids((uint32_t[]){0, 1, NPAD_HANDHELD}, 3); dm_pad_players(3);
+    dm_input_set(0, 0, 0, 0, 0); dm_pad_set(0, 0, 0, 0, 0);
+    NpadState discard; fill(&discard, 0, STYLE_FULLKEY);
+    NpadState first[17], pressed[17], released[17], again[17];
+    states(first, 17, 0, STYLE_FULLKEY);
+    g_time += 5000000;
+    dm_pad_set(DM_BTN_A, 23000, 0, 0, 0);
+    states(pressed, 17, 0, STYLE_FULLKEY);
+    CHECK(pressed[0].buttons & DM_BTN_A, "new press is visible immediately");
+    CHECK(pressed[1].sampling == first[0].sampling && !pressed[1].buttons && !pressed[1].lx,
+          "a new press does not rewrite the preceding neutral sample");
+    g_time += 5000000; dm_pad_set(0, 0, 0, 0, 0);
+    states(released, 17, 0, STYLE_FULLKEY);
+    CHECK(!released[0].buttons && !released[0].lx, "release is current");
+    CHECK(!memcmp(&released[1], &pressed[0], sizeof(NpadState)), "release preserves the previous press and stick position");
+    states(again, 17, 0, STYLE_FULLKEY);
+    CHECK(!memcmp(released, again, sizeof released), "an unchanged poll in the same clock tick creates no samples");
+    states(again, 17, 1, STYLE_FULLKEY); states(again, 17, 0, STYLE_FULLKEY);
+    CHECK(!memcmp(released, again, sizeof released), "polling another player does not advance player one's history");
+    dm_pad_set(DM_BTN_X, 0, 0, 0, 0); dm_pad_set(0, 0, 0, 0, 0);
+    states(pressed, 17, 0, STYLE_FULLKEY); states(released, 17, 0, STYLE_FULLKEY);
+    CHECK((pressed[0].buttons & DM_BTN_X) && !released[0].buttons, "a short press is latched for one current sample");
+    CHECK(!memcmp(&released[1], &pressed[0], sizeof(NpadState)), "a short press remains an immutable historical sample");
+    g_time += 1000000000ull; states(again, 17, 0, STYLE_FULLKEY);
+    CHECK(!again[0].buttons && again[0].sampling > released[0].sampling, "elapsed time advances the history without replaying a released button");
+    for (int i = 1; i < 17; i++) CHECK(again[i - 1].sampling == again[i].sampling + 1 && !again[i].buttons, "history stays newest first after a long gap");
+    CHECK(states(again, 0, 0, STYLE_FULLKEY) == 0, "zero capacity writes no states");
+    CHECK(states(again, 100, 0, STYLE_FULLKEY) == 17, "capacity is bounded by the hardware history length");
+    dm_pad_set(DM_BTN_ZL, 0, 0, 0, 0); dm_pad_set(0, 0, 0, 0, 0); dm_pad_discard_edges(0);
+    CHECK(buttons_of(0, STYLE_FULLKEY) == 0, "focus loss discards an unread controller shield press");
+    dm_input_set(DM_BTN_ZR, 0, 0, 0, 0); dm_input_set(0, 0, 0, 0, 0); dm_input_discard_edges();
+    CHECK(buttons_of(0, STYLE_FULLKEY) == 0, "focus loss discards an unread keyboard press");
+}
+
+static void t_triggers(void) {
+    int down = 0;
+    CHECK(!pad_trigger_pressed(down, 0, .5f, .45f), "neutral analog trigger is released");
+    CHECK(!pad_trigger_pressed(down, .01f, .5f, .45f), "a light trigger touch does not press shield");
+    CHECK(!pad_trigger_pressed(down, .49f, .5f, .45f), "travel below the press threshold stays released");
+    down = pad_trigger_pressed(down, .5f, .5f, .45f);
+    CHECK(down, "half travel presses the digital trigger");
+    down = pad_trigger_pressed(down, .48f, .5f, .45f);
+    CHECK(down, "the small release band prevents threshold chatter");
+    down = pad_trigger_pressed(down, .45f, .5f, .45f);
+    CHECK(!down, "the trigger releases before it returns to zero");
+    CHECK(!pad_trigger_pressed(down, .48f, .5f, .45f), "partial return does not re-press the trigger");
+    CHECK(pad_trigger_pressed(0, 1, .5f, .45f) && !pad_trigger_pressed(1, 0, .5f, .45f), "digital zero/one triggers keep working");
+    CHECK(!pad_trigger_pressed(1, NAN, .5f, .45f), "an invalid device value releases the trigger");
+}
+
 int main(void) {
     t_slots();
     t_npads();
     t_vibration();
+    t_history();
+    t_triggers();
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

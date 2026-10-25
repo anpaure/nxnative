@@ -57,6 +57,12 @@ static size_t tex_size(int fmt, int w, int h, int flags, size_t *align) {
 
 int main(void) {
     crash_install();   // the same SIGSEGV / SIGBUS handling as production (the page-fault hook is dispatched from within it)
+    EXPECT("zero-size replay header is rejected", 0, op_header_valid((op_hdr){176, 0}));
+    EXPECT("zero-size known opcode is rejected", 0, op_header_valid((op_hdr){OP_BIND_UBO, 0}));
+    EXPECT("unknown opcode is rejected", 0, op_header_valid((op_hdr){OP_COUNT_, 32}));
+    EXPECT("misaligned replay size is rejected", 0, op_header_valid((op_hdr){OP_BIND_UBO, 31}));
+    EXPECT("truncated branch payload is rejected", 0, op_header_valid((op_hdr){OP_JUMP, 8}));
+    EXPECT("an END and a texture bind remain valid", 1, op_header_valid((op_hdr){OP_END, 8}) && op_header_valid((op_hdr){OP_BIND_TEX1, 32}));
     // 1. Bootstrap address lookup: bootstrap gets GetProcAddress, then uses it to get all the names
     PFNNVNBOOTSTRAPLOADERPROC boot = (PFNNVNBOOTSTRAPLOADERPROC)h_nvnBootstrapLoader;
     gpa = (PFNNVNDEVICEGETPROCADDRESSPROC)boot("nvnDeviceGetProcAddress");
@@ -228,6 +234,61 @@ int main(void) {
         int intact = 1; for (int i = 0; i < 32; i++) intact &= g_cmdmem[0x8100 + i] == 0xA5;
         EXPECT("snapshot overflow stays inside guest grant", 1, intact);
         P(nvnCommandBufferFinalize)(&upload);
+    }
+
+    // A recording can jump between disjoint guest grants before overflowing.
+    // Memory in the gap belongs to other lists, so re-granting it must not
+    // retire the host continuation of this still-live recording (SSBU).
+    {
+        NVNcommandBuffer a, b;
+        P(nvnCommandBufferInitialize)(&a, &dev);
+        P(nvnCommandBufferInitialize)(&b, &dev);
+        P(nvnCommandBufferAddCommandMemory)(&a, &g_cmdpool, 0xA000, 64);
+        P(nvnCommandBufferBeginRecording)(&a);
+        P(nvnCommandBufferBindUniformBuffer)(&a, NVN_SHADER_STAGE_FRAGMENT, 0, 0x10000, 64);
+        P(nvnCommandBufferAddCommandMemory)(&a, &g_cmdpool, 0xC000, 64);
+        for (int i = 0; i < 2; i++) P(nvnCommandBufferBindUniformBuffer)(&a, NVN_SHADER_STAGE_FRAGMENT, i, 0x10000, 64);
+        P(nvnCommandBufferEndRecording)(&a);
+        uint8_t *a_start = CB(&a)->end - HOSTSEG_SZ, before[40];
+        memcpy(before, a_start, sizeof before);
+        // Moving A's cursor leaves the old handle valid; only its actual
+        // source command memory determines when its continuation is dead.
+        P(nvnCommandBufferAddCommandMemory)(&a, &g_cmdpool, 0xD000, 64);
+        P(nvnCommandBufferAddCommandMemory)(&b, &g_cmdpool, 0xB000, 64);
+        P(nvnCommandBufferBeginRecording)(&b);
+        for (int i = 0; i < 2; i++) P(nvnCommandBufferBindUniformBuffer)(&b, NVN_SHADER_STAGE_FRAGMENT, i, 0x20000, 64);
+        P(nvnCommandBufferEndRecording)(&b);
+        EXPECT("a grant in a gap preserves the old host continuation", 0, memcmp(before, a_start, sizeof before));
+        EXPECT("disjoint guest grants retain distinct live continuations", 1, a_start + HOSTSEG_SZ != CB(&b)->end);
+        P(nvnCommandBufferFinalize)(&a);
+        P(nvnCommandBufferFinalize)(&b);
+    }
+
+    // Re-granting the guest range retires its old overflow lists, but another
+    // command buffer may still append through its cursor in that host segment.
+    // Recycling that segment gave two live cursors the same storage (SSBU).
+    {
+        NVNcommandBuffer a, b;
+        P(nvnCommandBufferInitialize)(&a, &dev);
+        P(nvnCommandBufferInitialize)(&b, &dev);
+        P(nvnCommandBufferAddCommandMemory)(&a, &g_cmdpool, 0x9000, 64);
+        P(nvnCommandBufferBeginRecording)(&a);
+        for (int i = 0; i < 2; i++) P(nvnCommandBufferBindUniformBuffer)(&a, NVN_SHADER_STAGE_FRAGMENT, i, 0x10000, 64);
+        P(nvnCommandBufferEndRecording)(&a);
+        uint8_t *a_end = CB(&a)->end;
+        P(nvnCommandBufferAddCommandMemory)(&b, &g_cmdpool, 0x9000, 64);
+        P(nvnCommandBufferBeginRecording)(&b);
+        for (int i = 0; i < 8; i++) P(nvnCommandBufferBindUniformBuffer)(&b, NVN_SHADER_STAGE_FRAGMENT, i, 0x20000, 64);
+        P(nvnCommandBufferEndRecording)(&b);
+        uint8_t *b_start = CB(&b)->end - HOSTSEG_SZ, before[256];
+        memcpy(before, b_start, sizeof before);
+        EXPECT("overflow cursors of two command buffers use distinct segments", 1, a_end != CB(&b)->end);
+        P(nvnCommandBufferBeginRecording)(&a);
+        P(nvnCommandBufferBindTexture)(&a, NVN_SHADER_STAGE_FRAGMENT, 0, 0);
+        P(nvnCommandBufferEndRecording)(&a);
+        EXPECT("appending through an older cursor preserves the other recording", 0, memcmp(before, b_start, sizeof before));
+        P(nvnCommandBufferFinalize)(&a);
+        P(nvnCommandBufferFinalize)(&b);
     }
 
     NVNqueueBuilder qb; NVNqueue q; static uint8_t qmem[1 << 19];

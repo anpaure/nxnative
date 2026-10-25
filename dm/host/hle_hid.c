@@ -58,6 +58,8 @@ void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t 
     if (!p) shake_note();
 }
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { dm_pad_set_player(0, buttons, lx, ly, rx, ry); }
+void dm_input_discard_edges(void) { atomic_store(&g_latch, 0); }
+void dm_pad_discard_edges(int p) { if (p >= 0 && p < DM_PLAYERS) atomic_store(&g_pad_latch[p], 0); }
 uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
 // DM_KEYS scripted input (for tests): "seconds:key[+key][~hold seconds][*count/interval seconds],...", e.g. "8:A,12:A,15:Down~0.5,16:A+B,40:A*80/2" (A every 2 s from 40 s on, 80 times). Key names A B X Y LS RS L R ZL ZR (plus the sticks LLeft LUp LRight LDown and RLeft RUp RRight RDown) Plus Minus Left Up Right Down, left stick LLeft LUp LRight LDown,
 //   L<x>/<y> and R<x>/<y> = a stick tilted part way (each -1 to 1, y up: a cursor that a full tilt sweeps past its target), T<x>x<y> = a touch at normalized picture coordinates (origin top left) for the hold time, and Shake = the controller shaken for the hold time (at least one whole shake);
@@ -219,7 +221,7 @@ void dm_pad_players(uint32_t mask) {
     mask = (mask | 1u) & ((1u << DM_PLAYERS) - 1);
     uint32_t old = atomic_exchange(&g_players, mask);
     for (int p = 1; p < DM_PLAYERS; p++) if ((old ^ mask) >> p & 1) {
-        if (!(mask >> p & 1)) dm_pad_set_player(p, 0, 0, 0, 0, 0);   // a controller that went away leaves nothing pressed
+        if (!(mask >> p & 1)) { dm_pad_set_player(p, 0, 0, 0, 0, 0); dm_pad_discard_edges(p); }   // no held or pending press survives disconnect
         if (atomic_load(&g_ids_supported) & id_bit((uint32_t)p)) style_changed((uint32_t)p);
     }
     note_merged();
@@ -254,14 +256,43 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     }
     s->attributes = ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WIRED | ATTR_RIGHT_CONN | ATTR_RIGHT_WIRED : ATTR_LEFT_CONN | ATTR_RIGHT_CONN);
 }
-// GetNpadStates(out, n, id): newest first, n entries: the current state repeated with consecutive sampling numbers. The host keeps no history, but on hardware the
-// 16-entry history is always full, and games read all of it whatever count comes back: Super Mario Odyssey (main+0x93fc20) polls every controller slot each frame, which advances
-// the shared sampling number by about 16 per frame, and with only entry 0 written neither stick did anything in play (the camera did not turn at its first hint) while buttons
-// and menus (the stick's direction bits) worked; with every entry written the camera turns
+// Real, newest-first history per npad/style. Repeating the latest state through
+// the history rewrites already reported sampling numbers when a button or stick
+// changes. Games processing those overlapping histories then see contradictory
+// edges. Keep the full history (Odyssey reads past entry 0), retaining old states
+// across transitions. The 5 ms host clock fills elapsed slots with the last known
+// state; a newly observed change is current immediately, including within a slot.
+enum { NPAD_HISTORY = 17 };
+static struct { NpadState samples[NPAD_HISTORY]; uint64_t tick; int init; } g_history[DM_PLAYERS + 2][5];
+static pthread_mutex_t g_history_mu = PTHREAD_MUTEX_INITIALIZER;
 static int states(NpadState *out, int n, uint32_t id, uint32_t style) {
     if (n <= 0) return 0;
-    fill(out, id, style);
-    for (int i = 1; i < n; i++) { out[i] = out[0]; out[i].sampling = out[0].sampling - i; }
+    if (n > NPAD_HISTORY) n = NPAD_HISTORY;
+    int slot = id < DM_PLAYERS ? (int)id : id == NPAD_HANDHELD ? DM_PLAYERS : DM_PLAYERS + 1;
+    int st = style == STYLE_HANDHELD ? 1 : style == STYLE_JOYDUAL ? 2 : style == STYLE_JOYLEFT ? 3 : style == STYLE_JOYRIGHT ? 4 : 0;
+    pthread_mutex_lock(&g_history_mu);
+    NpadState current; fill(&current, id, style);
+    uint64_t tick = guest_ns() / 5000000ull;
+    typeof(g_history[0][0]) *h = &g_history[slot][st];
+    if (!h->init) {
+        current.sampling = 1 << 16;
+        h->samples[0] = current;
+        for (int i = 1; i < NPAD_HISTORY; i++) { h->samples[i].sampling = current.sampling - i; h->samples[i].attributes = current.attributes; }
+        h->tick = tick; h->init = 1;
+    } else {
+        NpadState previous = h->samples[0];
+        uint64_t steps = tick > h->tick ? tick - h->tick : 0;
+        int changed = memcmp(&current.buttons, &previous.buttons, sizeof current - sizeof current.sampling) != 0;
+        if (steps || changed) {
+            if (!steps) steps = 1;
+            int shift = steps < NPAD_HISTORY ? (int)steps : NPAD_HISTORY;
+            memmove(h->samples + shift, h->samples, (NPAD_HISTORY - shift) * sizeof current);
+            for (int i = 0; i < shift; i++) { h->samples[i] = i ? previous : current; h->samples[i].sampling = previous.sampling + (int64_t)steps - i; }
+            h->tick = tick;
+        }
+    }
+    memcpy(out, h->samples, (size_t)n * sizeof *out);
+    pthread_mutex_unlock(&g_history_mu);
     return n;
 }
 

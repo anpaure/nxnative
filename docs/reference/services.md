@@ -211,9 +211,26 @@ Most service calls can be found before they crash, before the first boot or the 
 
 - **Symptom:** buttons and menus work, the sticks do nothing in play (Super Mario Odyssey: its first hint, "Look Around", waited forever); an `nn::diag` abort with Result 0x2aca in the first frames of `nnMain` (Hollow Knight: Silksong, Unity 6000.0.50f1: `bt: sdk+0x514580 main+0x1296c64 …`).
 - **Cause:** games read whole histories and ignore the returned count. Odyssey reads all 16 entries of `GetNpadStates`; the host filled only the newest. It polls every controller slot each frame, which moves the shared sampling number on by about 16, so the stick samples it combined were mostly empty, while buttons and the stick's direction bits (which menus use) still came through. Silksong's `main+0x1296c60` calls `hid::GetDebugPadStates(states, 16)` every frame, and the SDK's own reads a debug pad resource nothing initialized (module 202, hid); the host had only the single-state `GetDebugPadState`.
-- **Fix:** the host now fills every requested `GetNpadStates` entry with the current state under consecutive sampling numbers; the `GetDebugPadStates` history form answers every requested entry as not connected, newest first with consecutive sampling numbers (`hle_hid.c`). `DM_KEYS` takes `RLeft` / `RUp` / `RRight` / `RDown` for the right stick.
+- **Fix:** the host fills the complete `GetNpadStates` history, retaining past states rather than repeating the newest through it ([Immutable controller history](#immutable-controller-history)). The `GetDebugPadStates` history form answers every requested entry as not connected, newest first with consecutive sampling numbers (`hle_hid.c`). `DM_KEYS` takes `RLeft` / `RUp` / `RRight` / `RDown` for the right stick.
 - **Found on:** [Super Mario Odyssey](../../dm/games/0100000000010000/README.md); [Hollow Knight: Silksong](../../dm/games/010013C00E930000/README.md).
 - **Note:** Odyssey's six-axis history is read the same way ([Six-axis sensors](#six-axis-sensors)).
+
+### Immutable controller history
+
+- **Symptom:** past controller samples change when a button or stick changes; a player reports unwanted rolls and air dodges.
+- **Cause:** the old `GetNpadStates` implementation copied the latest state into every history entry. A press reported as sample N on one call could become a release under that same sample number on the next call. The inconsistency is reproducible independently of the game. After the fix, the user reported that the unwanted rolls and air dodges were "gone so far"; longer controller testing remains useful.
+- **Fix:** `hle_hid.c` keeps a 17-entry history per npad and style, matching the [hardware ring size](https://switchbrew.github.io/libnx/hid_8h_source.html). A 5 ms host clock advances held samples; a newly observed input is recorded immediately, and unchanged polls within a clock tick return the same history. Elapsed slots retain the last known state, so a new press is not backdated into them. Other players' queries do not advance this controller's history. Short press latching remains; this does not change the game's action buffer.
+- **Check:** `t_hid` verifies press/release and stick transitions, immutable overlapping sample numbers, repeated reads, player isolation, a short tap, long gaps and the bounded output count. Five history checks fail with the former implementation.
+- **Focus/disconnect:** clearing the currently held buttons did not clear the unread press latch. The Mac front end now discards those edges when losing focus or disconnecting, and keeps GameController's cached device state current while ignoring background input. Two further checks cover pending controller/keyboard shield presses discarded on focus loss.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), 13.0.3 Mac input investigation.
+
+### Analog trigger thresholds on Mac
+
+- **Symptom:** shield activates with a slight trigger touch and stays held until the trigger is fully released.
+- **Cause:** the Mac front end used GameController's digital `isPressed` value for analog ZL/ZR, inheriting its device-specific threshold and release behavior.
+- **Fix:** read the analog trigger travel with a host threshold: press at 50%, release at 45%. The hysteresis prevents flicker around the threshold. `DM_PAD_TRIGGER_THRESHOLD` and `DM_PAD_TRIGGER_RELEASE` optionally override these fractions. Focus loss and disconnect clear the held-trigger state.
+- **Check:** nine `t_hid` checks cover light touches, press/release thresholds, hysteresis, digital 0/1 values and nonfinite input; 98 total HID checks pass. Controller feel still needs user confirmation.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), connected 8BitDo Pro 2.
 
 ### Npad style set update event
 

@@ -5237,6 +5237,7 @@ static int fz_next(fz_cursor *c, const uint8_t **out, op_hdr *oh, const void **o
     for (int guard = 0; guard < 1000000; guard++) {
         if (!c->p) return 0;
         op_hdr h; memcpy(&h, c->p, sizeof h); const void *a = c->p + 8;
+        if (!op_header_valid(h)) { c->bad = 1; return 0; }
         switch (h.op) {
             case OP_END:
                 if (c->ret_n) c->p = c->ret[--c->ret_n];
@@ -5713,6 +5714,7 @@ static void sdx_walk(const uint8_t *p, int depth) {
     if (depth > 64) { g_sdx_ok = 0; return; }
     for (uint32_t guard = 0; guard < 4000000 && p && g_sdx_ok; guard++) {
         op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8;
+        if (!op_header_valid(h)) { g_sdx_ok = 0; return; }
         if (g_sdx_nop == g_sdx_opcap) { g_sdx_opcap = g_sdx_opcap ? g_sdx_opcap * 2 : 16384; g_sdx_op = realloc(g_sdx_op, g_sdx_opcap * sizeof *g_sdx_op); }
         uint32_t seq = g_sdx_nop; g_sdx_op[g_sdx_nop++] = p;
         switch (h.op) {
@@ -8049,6 +8051,7 @@ void mtl_exec(const uint8_t *p) {
     int trace = dump_all && passdump();   // Normal mode does not check the frame range per operation; the full command position is only used for the designated diagnostic frames
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
+        if (!op_header_valid(h)) MDIE("[RED] invalid command record at %p: op %u size %u (submit %llu)", p, h.op, h.size, (unsigned long long)g_sub_serial);
         g_exec_cur = p;   // Scan start point of the store lookahead: the operation that ends the render pass (inclusive)
         if (p == g_defer_pend) { for (int gi = 0; gi < 4; gi++) if (g_defer_slots[gi].active && g_defer_slots[gi].p_end_op == p) g_defer_slots[gi].in_p = 0; g_defer_pend = NULL; }
         sdx_seq(p);
@@ -8654,8 +8657,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (g_present_layer_resident != layer) { [g_q4 addResidencySet:layer.residencySet]; g_present_layer_resident = layer; }
 #if TARGET_OS_OSX
     static int low_latency = -1;
-    if (low_latency < 0) { const char *e = getenv("DM_PRESENT_LOW_LATENCY"); low_latency = e && atoi(e); if (low_latency) { layer.maximumDrawableCount = 2; MLOG("low-latency presentation: two drawables, immediate display; game pacing unchanged"); } }
-    if (layer.displaySyncEnabled == low_latency) layer.displaySyncEnabled = !low_latency;
+    if (low_latency < 0) {
+        const char *e = getenv("DM_PRESENT_LOW_LATENCY");
+        low_latency = e && !strcmp(e, "sync") ? 2 : e && atoi(e) ? 1 : 0;
+        if (low_latency) { layer.maximumDrawableCount = 2; MLOG("low-latency presentation: two drawables, %s display; game pacing unchanged", low_latency == 2 ? "synchronized" : "immediate"); }
+    }
+    BOOL display_sync = low_latency != 1;
+    if (layer.displaySyncEnabled != display_sync) layer.displaySyncEnabled = display_sync;
 #else
     const int low_latency = 0;
 #endif
@@ -8722,7 +8730,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         }
     }];
     // Each frame is displayed for at least one present period: when the GPU completion time jitters around a 120 Hz refresh boundary, the paired "25 ms + 8.33 ms" stutter no longer appears
-    if (target_ts > 0 || low_latency) [dr present];
+    if (target_ts > 0 || low_latency == 1) [dr present];
     else if (period > 0) [dr presentAfterMinimumDuration:period]; else [dr present];
 #endif
     (void)frame;

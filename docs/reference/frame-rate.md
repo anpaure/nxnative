@@ -71,6 +71,15 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Found on:** [Super Mario Galaxy 2](../../dm/games/0100FD8022DAA000/README.md) (Vulkan).
 - **Note:** a Mac window measures nothing here unless it is on screen: macOS fires an occluded window's display link about once a second (`display link recovered: stalled 1017 ms`).
 
+### Zero-retrace intervals counted as elapsed ticks
+
+- **Symptom:** movement speeds up after a shader stall while the display still reports 60 FPS; a player reports it in Training and regular matches.
+- **Cause:** the display-event counter itself advanced at 60.03 Hz, but the engine ran extra update passes in later windows. SSBU's acquire helper returned `max(retrace_delta - 1, 0)` and its caller added one before updating the signed retrace debt. A 2/0 sequence therefore counted three retraces instead of two: the two added catch-up work, while the zero still added one. Independent host timing phases and guest-event delivery can expose such sequences.
+- **Fix:** the build-gated 13.0.3 profile retains the helper's previous snapshot and returns `retrace_delta - 1`, including -1 for a zero interval. The caller's existing 32-bit add-one then counts zero correctly. Positive intervals, waits, error flags, last-count stores and render ordering retain their original behavior. The function has one direct caller, which was checked in the original binary. This is a game-profile correction, with original-byte and stack-layout assertions; the host clock and game action buffer are unchanged.
+- **Check:** the emitted AArch64 words pass register, flag and stack checks for zero, positive and wrapping counters. A model using the unchanged debt logic turns a repeated 1/2/0 clock sequence from 480 updates in 360 frames into 361 (one initial real gap, without persistent excess). In native headless Training with three 137 ms host stalls, the old code averaged 1.054 update passes per frame over the sampled window counters; the correction produced 1.000 in all 114 qualifying samples, with no extra pass seen in 168 samples. A foreground 30-second capture with level 3 confirmed the live setting and averaged 1.0007 update passes per frame over its sampled window counters, with no extra pass sampled. The user reported excellent play feel and no noticed speedups. Broader stage/fighter and regular-match stress testing remains open.
+- **Ordering:** signaling the guest's display event before releasing acquire waiters does not prove its guest listener has updated the counter. A shared-clock host prototype increased extra passes in native testing and was removed; its passing clock unit tests were insufficient evidence for game pacing.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), 13.0.3 Mac. The user separately reported a smooth match with "max CPUs" on the command-memory hang fix; that did not establish that the intermittent speedup was resolved.
+
 ### Virtual 60 Hz ticks on screens that are not a multiple of 60
 
 - **Symptom:** asked for 60 Hz, the system fires the display link on every third refresh of a 165 Hz screen, 55 Hz, so games paced by it ran at 55 fps (27.5 at 30).
@@ -100,6 +109,7 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 
 - **Symptom:** frames wait in macOS presentation after the game enqueues them.
 - **Fix:** `DM_PRESENT_LOW_LATENCY=1` uses two CAMetalLayer drawables, disables display sync and presents immediately instead of adding a minimum display duration. The game's own pacing remains unchanged; use with direct presentation (`DM_PRESENT_LINK=0`). This can trade tearing resistance for lower delay. The default remains synchronized presentation.
+- **Synchronized alternative:** `DM_PRESENT_LOW_LATENCY=sync` keeps two drawables while enabling display sync and retaining the minimum display duration. At 60 fps on a 120 Hz screen the hold avoids presenting one frame for 25 ms and the next for 8.33 ms when completion jitters around a refresh boundary. Immediate mode remains optional; a lower enqueue-to-display median alone does not establish smooth pacing.
 - **Check:** the log reports render enqueue to the drawable's actual `presentedTime` (p50, p95, maximum over 300 displayed frames). This is presentation latency, not a physical button-to-photon measurement.
 - **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), M4 Max and built-in display.
 

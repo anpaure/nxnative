@@ -14,6 +14,7 @@
 #include "front.h"
 #include "hle.h"
 #include "pad_slots.h"
+#include "pad_trigger.h"
 #include "haptics_apple.h"
 #include <signal.h>
 #include <math.h>
@@ -135,6 +136,8 @@ static void on_key(NSEvent *e, int down) {
 static pad_slots g_slots;
 static GCController *g_held[DM_PLAYERS];   // the controller of each slot, kept alive while it holds it (the slot table keys on its pointer)
 static int g_merge, g_kbd_own;
+static unsigned g_trigger_down[DM_PLAYERS];
+static float g_trigger_press = 0.5f, g_trigger_release = 0.45f;
 static int32_t pad_axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * DM_STICK_MAX); }
 static void pad_read(GCExtendedGamepad *g) {
     if (!g_input_on) return;
@@ -143,7 +146,12 @@ static void pad_read(GCExtendedGamepad *g) {
     uint64_t m = 0;
     #define K(btn, bit) if (btn.isPressed) m |= bit
     K(g.buttonB, DM_BTN_A); K(g.buttonA, DM_BTN_B); K(g.buttonY, DM_BTN_X); K(g.buttonX, DM_BTN_Y);   // by position: right A, bottom B, top X, left Y
-    K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R); K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
+    K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R);
+    unsigned triggers = (unsigned)pad_trigger_pressed(g_trigger_down[p] & 1, g.leftTrigger.value, g_trigger_press, g_trigger_release)
+                      | ((unsigned)pad_trigger_pressed(g_trigger_down[p] & 2, g.rightTrigger.value, g_trigger_press, g_trigger_release) << 1);
+    g_trigger_down[p] = triggers;
+    if (triggers & 1) m |= DM_BTN_ZL;
+    if (triggers & 2) m |= DM_BTN_ZR;
     K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS); K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);   // nil on pads without them: not pressed
     K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
     #undef K
@@ -159,7 +167,7 @@ static void pads_changed(GCController *gone) {
             any = 1; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; pad_read(g); };
             pad_read(c.extendedGamepad);
         }
-        if (!any) { dm_pad_set(0, 0, 0, 0, 0); dm_haptics_apple_controller(0, nil); }
+        if (!any) { g_trigger_down[0] = 0; dm_pad_set(0, 0, 0, 0, 0); dm_pad_discard_edges(0); dm_haptics_apple_controller(0, nil); }
         return;
     }
     NSArray<GCController *> *now = GCController.controllers; char nb[16];
@@ -169,6 +177,8 @@ static void pads_changed(GCController *gone) {
         dm_haptics_apple_controller(p, nil);
         pad_slot_free(&g_slots, (__bridge const void *)g_held[p]); g_held[p] = nil;
         dm_pad_set_player(p, 0, 0, 0, 0, 0);   // nothing stays pressed
+        dm_pad_discard_edges(p);
+        g_trigger_down[p] = 0;
     }
     for (GCController *c in now) if (c.extendedGamepad && c != gone && pad_slot_of(&g_slots, (__bridge const void *)c) < 0) {
         int p = pad_slot_take(&g_slots, (__bridge const void *)c, pad_name(c));
@@ -181,15 +191,18 @@ static void pads_changed(GCController *gone) {
     dm_pad_players(pad_slot_mask(&g_slots));
 }
 // Focus: a window that is no longer key sees no key-up, mouse-up or controller release, so whatever is held when it loses focus (another app, the text box, minimized) would
-// stay pressed in the game. The front end releases only what it pressed itself: player 1's pad and the touch are also DM_KEYS / DM_CTL's (hle_hid.c), and a scripted hold goes on.
+// stay pressed in the game. Drop unread press edges too: releasing the current
+// state alone leaves a tap latched, which would fire when the window returns.
 // Out of focus a controller's changes are ignored, so back in focus each controller is read as it is now (a button still held, a stick still deflected)
 static int g_mouse_down;   // the mouse holds the touch (DmGameView)
 static void input_release(void) {
     g_input_on = 0;
     g_btn = 0; g_w = g_a = g_s = g_d = 0; push();
+    dm_input_discard_edges();
+    memset(g_trigger_down, 0, sizeof g_trigger_down);
     if (g_mouse_down) { g_mouse_down = 0; dm_touch_set(NULL, 0); }
-    if (g_merge) { for (GCController *c in GCController.controllers) if (c.extendedGamepad) { dm_pad_set(0, 0, 0, 0, 0); break; } }
-    else for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p]) dm_pad_set_player(p, 0, 0, 0, 0, 0);
+    if (g_merge) { for (GCController *c in GCController.controllers) if (c.extendedGamepad) { dm_pad_set(0, 0, 0, 0, 0); dm_pad_discard_edges(0); break; } }
+    else for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p]) { dm_pad_set_player(p, 0, 0, 0, 0, 0); dm_pad_discard_edges(p); }
 }
 static void input_resume(void) {
     g_input_on = 1;
@@ -197,6 +210,21 @@ static void input_resume(void) {
     else for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p].extendedGamepad) pad_read(g_held[p].extendedGamepad);
 }
 static void pads_start(void) {
+    // Keep Apple's cached state current while inactive. pad_read still ignores
+    // background input; focus regain must not re-publish a stale held trigger.
+    GCController.shouldMonitorBackgroundEvents = YES;
+    const char *tp = getenv("DM_PAD_TRIGGER_THRESHOLD"), *tr = getenv("DM_PAD_TRIGGER_RELEASE");
+    if (tp) {
+        char *end; float v = strtof(tp, &end);
+        if (end != tp && !*end && isfinite(v) && v > 0 && v <= 1) { g_trigger_press = v; g_trigger_release = fmaxf(0, v - 0.05f); }
+        else LOG("[RED] DM_PAD_TRIGGER_THRESHOLD must be greater than 0 and at most 1; using 0.5");
+    }
+    if (tr) {
+        char *end; float v = strtof(tr, &end);
+        if (end != tr && !*end && isfinite(v) && v >= 0 && v < g_trigger_press) g_trigger_release = v;
+        else LOG("[RED] DM_PAD_TRIGGER_RELEASE must be nonnegative and below the press threshold; keeping %.2f", g_trigger_release);
+    }
+    LOG("controller analog triggers: press at %.0f%% travel, release at %.0f%%", 100 * g_trigger_press, 100 * g_trigger_release);
     const char *e = getenv("DM_PAD_MERGE"); g_merge = e && atoi(e);
     e = getenv("DM_KBD_PLAYER"); g_kbd_own = !g_merge && e && !strcmp(e, "own");
     static const char kbd = 0;
