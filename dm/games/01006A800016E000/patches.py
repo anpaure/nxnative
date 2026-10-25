@@ -21,3 +21,63 @@ CUTS = {
     (0x37caf68, 'e91361b2', '2900c0d2', 'node pool bound: region end mov x9,#0xf80000000 → mov x9,#0x100000000'),
   ],
 }
+
+# 13.0.3 (v1900544): the same allocator and all eleven constant sites are
+# 0x990 bytes earlier. Checked against main 730c2141...: every original word
+# matches, the signature is unique, and the disassembly still reserves 62 GB
+# and derives the node pool and free-range bounds from it. SDK/movie builds
+# are unchanged, so the SDK's registered memory cuts already apply.
+CUTS['730c2141eebf9885e4857e7e50eae441'] = [
+    (off - 0x990, original, replacement, reason)
+    for off, original, replacement, reason in CUTS['21450c647b8c5940ed5b68218ea128fd']
+]
+
+
+def _render_queue_1303(ctx):
+    """Optional two-buffer render queue, independent of the 60 Hz simulation.
+
+    The original-byte assertions and build ID restrict these stubs to 13.0.3.
+    state +0x3c is DM_RENDER_LOW_LATENCY; target fps stays 0. With the flag off,
+    each stub executes the original instruction. Queue layout checked against
+    the dispatch wait/submit and pending-batch promotion in main+0x384f080.
+    """
+    from nso_asm import ADRP, B, STRX
+    # Promote the pending dispatch before waiting/submitting it, rather than at
+    # the end of the flush (which otherwise retains a previous frame's batch).
+    site = 0x384f080
+    ctx.site(site, 'f85fbca9')  # stp x24,x23,[sp,#-0x40]!
+    start = ctx.here()
+    ctx.emit(ADRP(16, ctx.here(), ctx.state))
+    for word in (
+        0xb9403e10,       # ldr w16,[x16,#0x3c]
+        0x34000170,       # cbz w16,original
+        0x5283a310,       # mov w16,#0x1d18 (pending dispatch flag)
+        0x38706811,       # ldrb w17,[x0,x16]
+        0x34000111,       # cbz w17,original
+        0xb95d2010,       # ldr w16,[x0,#0x1d20] (producer index)
+        0x2a3003f0,       # mvn w16,w16
+        0x92400210,       # and x16,x16,#1
+        STRX(16, 0, 0x1d30 // 8),
+        0x5283a510,       # mov w16,#0x1d28 (dispatch ready flag)
+        0x52800031,       # mov w17,#1
+        0x38306811,       # strb w17,[x0,x16]
+        0xa9bc5ff8,       # original prologue
+    ): ctx.emit(word)
+    ctx.emit(B(ctx.here(), site + 4))
+    ctx.put(site, [B(site, start)], 'optional low-latency render queue: flush the pending batch on this frame')
+
+    # The two active textures rotate 0,1. Render to (acquired + 1) % 2 instead
+    # of the triple-buffered delayed target (acquired + 2) % 3.
+    site = 0x386a76c
+    ctx.site(site, '29090011')  # add w9,w9,#2
+    start = ctx.here()
+    ctx.emit(ADRP(16, ctx.here(), ctx.state))
+    for word in (0xb9403e10, 0x34000090, 0x11000529, 0x12000129):  # flag; cbz original; add w9,#1; and w9,#1
+        ctx.emit(word)
+    ctx.emit(B(ctx.here(), site + 4))
+    ctx.emit(0x11000929)
+    ctx.emit(B(ctx.here(), site + 4))
+    ctx.put(site, [B(site, start)], 'optional low-latency render queue: match the two active window textures')
+
+
+FRAME_STEP = {'730c2141eebf9885e4857e7e50eae441': _render_queue_1303}

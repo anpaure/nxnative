@@ -16,8 +16,10 @@ ipa	SuperSmashBrosUltimate.ipa
 app_category	public.app-category.games
 
 # ---- Versions ----
-# only the merged 13.0.5 copy is extracted
+# Registered merged builds; shader tables default to 13.0.5 (other versions derive their own).
 build	v2031616	13.0.5	main=21450c647b8c5940ed5b68218ea128fd	subsdk0=60c6edbbfcebd4176cc301d5d9cb5a6f	sdk=5fd4f531c1195e9e5510c9e73f22cd39
+# 13.0.3: allocator cuts checked against the original instructions; Mac startup and DLC unlocks validated
+build	v1900544	13.0.3	main=730c2141eebf9885e4857e7e50eae441	subsdk0=60c6edbbfcebd4176cc301d5d9cb5a6f	sdk=5fd4f531c1195e9e5510c9e73f22cd39
 package	v2031616
 shader_versions	v2031616
 

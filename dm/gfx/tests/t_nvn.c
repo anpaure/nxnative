@@ -195,6 +195,41 @@ int main(void) {
     EXPECT("command memory callback at least twice (multi-segment)", 1, g_cb_calls >= 2);
     EXPECT("event value still 0 before submit", 0, P(nvnEventGetValue)(&ev));
 
+    // A fixed-size upload list fits without the host's texture snapshots. The
+    // extra snapshot bytes must not invoke a game callback that may be unset
+    // behind a registered SDK wrapper (SSBU stage-thumbnail uploads).
+    {
+        NVNcommandBuffer upload;
+        tex_t texture = { .magic = MAGIC('T', 'E', 'X', 0), .serial = 123 };
+        NVNcopyRegion region = {0}; region.width = region.height = region.depth = 1;
+        int before = g_cb_calls;
+        P(nvnCommandBufferInitialize)(&upload, &dev);
+        P(nvnCommandBufferSetMemoryCallback)(&upload, mem_cb);
+        P(nvnCommandBufferAddCommandMemory)(&upload, &g_cmdpool, 0x8000, 256);
+        memset(g_cmdmem + 0x8100, 0xA5, 32);
+        P(nvnCommandBufferBeginRecording)(&upload);
+        P(nvnCommandBufferSetCopyRowStride)(&upload, 32);
+        P(nvnCommandBufferSetCopyImageStride)(&upload, 32);
+        P(nvnCommandBufferSetCopyRowStride)(&upload, 32);
+        P(nvnCommandBufferCopyBufferToTexture)(&upload, 0x10000, (NVNtexture *)&texture, NULL, &region, 0);
+        const uint8_t *p = (const uint8_t *)P(nvnCommandBufferEndRecording)(&upload);
+        texture.serial = 456;  // The recording must retain its own snapshot.
+        int jumps = 0, copies = 0, end = 0, serial = 0;
+        for (int guard = 0; guard < 8; guard++) {
+            op_hdr h; memcpy(&h, p, sizeof h);
+            if (h.op == OP_JUMP) { memcpy(&p, p + 8, 8); jumps++; continue; }
+            if (h.op == OP_COPY_B2T) { const p_copy_b2t *r = (const p_copy_b2t *)(p + 8); copies++; serial = r->tex->serial; }
+            if (h.op == OP_END) { end = 1; break; }
+            p += h.size;
+        }
+        EXPECT("snapshot overflow does not call game callback", before, g_cb_calls);
+        EXPECT("upload recording links once and reaches its END", 1, jumps == 1 && copies == 1 && end);
+        EXPECT("upload keeps texture snapshot after object changes", 123, serial);
+        int intact = 1; for (int i = 0; i < 32; i++) intact &= g_cmdmem[0x8100 + i] == 0xA5;
+        EXPECT("snapshot overflow stays inside guest grant", 1, intact);
+        P(nvnCommandBufferFinalize)(&upload);
+    }
+
     NVNqueueBuilder qb; NVNqueue q; static uint8_t qmem[1 << 19];
     P(nvnQueueBuilderSetDevice)(&qb, &dev); P(nvnQueueBuilderSetDefaults)(&qb);
     size_t qsz = P(nvnQueueBuilderGetQueueMemorySize)(&qb);
@@ -574,6 +609,23 @@ int main(void) {
         P(nvnWindowAcquireTexture)(&w2, NULL, &ix);
         EXPECT("5th acquire returns texture 1", 1, ix);
         nvn_present_config(0, 0);
+    }
+
+    // Optional render-queue stubs must agree with the active swapchain rotation;
+    // the same patched module with its flag off keeps the original three slots.
+    {
+        static uint8_t state[64] __attribute__((aligned(8)));
+        uint8_t *saved = dm_fps_state; dm_fps_state = state;
+        NVNwindowBuilder b; NVNwindow w; NVNtexture *three[3] = {&sc[0], &sc[1], &sc[0]};
+        P(nvnWindowBuilderSetDefaults)(&b); P(nvnWindowBuilderSetTextures)(&b, 3, three);
+        P(nvnWindowInitialize)(&w, &b);
+        int a, c, d, e; P(nvnWindowAcquireTexture)(&w, NULL, &a); P(nvnWindowAcquireTexture)(&w, NULL, &c); P(nvnWindowAcquireTexture)(&w, NULL, &d);
+        EXPECT("queue flag off retains three active textures", 0x012, a << 8 | c << 4 | d);
+        uint32_t on = 1; memcpy(state + 0x3c, &on, 4);
+        P(nvnWindowInitialize)(&w, &b);
+        P(nvnWindowAcquireTexture)(&w, NULL, &a); P(nvnWindowAcquireTexture)(&w, NULL, &c); P(nvnWindowAcquireTexture)(&w, NULL, &d); P(nvnWindowAcquireTexture)(&w, NULL, &e);
+        EXPECT("queue flag on rotates two active textures", 0x0101, a << 12 | c << 8 | d << 4 | e);
+        dm_fps_state = saved;
     }
 
     // 6f. Present thread: when the drawable stays unavailable for a long time (the present thread stalls 200 ms each time), the present call still returns immediately;

@@ -4696,10 +4696,12 @@ static void warm_enqueue(WarmItem *item) {
     atomic_store_explicit(&g_warm_ready, 1, memory_order_release);
     os_unfair_lock_unlock(&g_warm_lock);
 }
+__attribute__((weak)) void front_shader_progress(unsigned long done, unsigned long total) { (void)done; (void)total; }
 static void warm_worker(NSArray<NSString *> *paths) {
     @autoreleasepool {
         NSMutableDictionary<NSString *, NvShader *> *dict = [NSMutableDictionary dictionary];
         NSMutableSet<NSString *> *seen = [NSMutableSet set];
+        NSMutableSet<NSString *> *compute_done = [NSMutableSet set];
         for (NSString *path in paths) {
             NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             if (!txt) { MLOG("[RED] cannot read prewarm list: %s", path.UTF8String); continue; }
@@ -4741,10 +4743,34 @@ static void warm_worker(NSArray<NSString *> *paths) {
                     if (!ps) { MLOG("[RED] background compute pipeline creation failed: %s", e.localizedDescription.UTF8String); continue; }
                     WarmItem *item = [WarmItem new]; item->kind = 2; item->key = key; item->shader = cs; item->object = ps;
                     warm_enqueue(item); g_warm_cps++;
+                    [compute_done addObject:key];
                 }
             }
         }
-        MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, background time %.1f ms; shader keys not in the shader map (another game version) %llu",
+        const char *mode = getenv("DM_PSO_PREWARM");
+        if (mode && !strcmp(mode, "all")) {
+            NSArray<NSString *> *keys = [[g_shmap allKeys] sortedArrayUsingSelector:@selector(compare:)];
+            unsigned long scanned = 0;
+            front_shader_progress(0, keys.count);
+            for (NSString *mapkey in keys) { @autoreleasepool {
+                NSString *key = [mapkey stringByAppendingString:@"_b"];
+                int stage = stage_of(g_shmap[mapkey]);
+                if (stage >= 0 && !dict[key]) {
+                    NvShader *sh = warm_shader(dict, key, stage);
+                    if (sh) { WarmItem *item = [WarmItem new]; item->kind = 0; item->key = key; item->shader = sh; warm_enqueue(item); g_warm_shaders++; }
+                }
+                // A compute pipeline needs no unknown render-target or vertex
+                // state: prepare every one, even if it has never been played.
+                if (stage == 5 && ![compute_done containsObject:key]) {
+                    NvShader *cs = dict[key]; NSError *e = nil;
+                    id ps = cs && cs->fn ? [g_dev newComputePipelineStateWithFunction:cs->fn error:&e] : nil;
+                    if (ps) { WarmItem *item = [WarmItem new]; item->kind = 2; item->key = key; item->shader = cs; item->object = ps; warm_enqueue(item); g_warm_cps++; [compute_done addObject:key]; }
+                    else MLOG("[RED] full warmup compute pipeline creation failed (%s): %s", key.UTF8String, e.localizedDescription.UTF8String);
+                }
+                if (++scanned % 1000 == 0 || scanned == keys.count) { MLOG("all-shader prewarm: %lu / %lu shader libraries prepared", scanned, (unsigned long)keys.count); front_shader_progress(scanned, keys.count); }
+            } }
+        }
+        MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, warmup time %.1f ms; shader keys not in the shader map (another game version) %llu",
              g_warm_shaders, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6, g_warm_skip_stale);
         if (g_comp4) MLOG("pipeline bases so far: %llu compiled, %llu from the archive, %llu reused (%.1f ms for the bases); %llu specializations, %llu pipelines without a base (MTLDevice)",
                           (unsigned long long)g_pb_built, (unsigned long long)g_pb_archived, (unsigned long long)g_pb_reused, g_pb_base_ns / 1e6, (unsigned long long)g_pb_spec, (unsigned long long)g_pb_legacy);
@@ -4779,6 +4805,14 @@ static void warm_start(void) {
     if (!g_warm_items) g_warm_items = [NSMutableArray array];
     pso4_init();   // the pipeline archive opens before the prewarm builds from it
     g_warm_t0 = bp_now();
+    const char *mode = getenv("DM_PSO_PREWARM");
+    if (mode && (!strcmp(mode, "blocking") || !strcmp(mode, "all"))) {
+        MLOG("pipeline prewarm: waiting before rendering (%s)", mode);
+        atomic_store(&g_warm_running, 1);
+        warm_worker(paths);
+        warm_claim();   // The very first draw must use the warmed objects too.
+        return;
+    }
     dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);   // Not optional background work: it decides whether the pipelines are ready before the player enters a run
     dispatch_queue_t q = dispatch_queue_create("dm.nvn.pso-warm", attr);
     atomic_store(&g_warm_running, 1);
@@ -8562,7 +8596,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     return 1;
 }
 static double g_link_it_tin;   // Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
-static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
+static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts, double enqueue_ts) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
@@ -8618,7 +8652,11 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (!layer) return 0;
     if (g_present_layer_resident != layer) { [g_q4 addResidencySet:layer.residencySet]; g_present_layer_resident = layer; }
 #if TARGET_OS_OSX
-    if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // Windowed mode follows the display's vsync to prevent tearing
+    static int low_latency = -1;
+    if (low_latency < 0) { const char *e = getenv("DM_PRESENT_LOW_LATENCY"); low_latency = e && atoi(e); if (low_latency) { layer.maximumDrawableCount = 2; MLOG("low-latency presentation: two drawables, immediate display; game pacing unchanged"); } }
+    if (layer.displaySyncEnabled == low_latency) layer.displaySyncEnabled = !low_latency;
+#else
+    const int low_latency = 0;
 #endif
     present_pipeline(layer.pixelFormat);   // Same as the original path: the first frame compiles the pipeline before taking the drawable
     if (g_grab_cb) grab_present(src, crop, layer.drawableSize);   // Game picture needed by the whole-window screenshot (peek without the lock first; the real take locks inside the function)
@@ -8670,9 +8708,20 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     [dr addPresentedHandler:^(id<MTLDrawable> d) {   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
         CFTimeInterval tt = d.presentedTime;
         g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
+        if (tt > 0 && enqueue_ts > 0) {
+            static double samples[300]; static unsigned n;
+            pthread_mutex_lock(&g_pq_mu);
+            samples[n++] = (tt - enqueue_ts) * 1000.0;
+            if (n == 300) {
+                for (unsigned i = 1; i < n; i++) { double v = samples[i]; unsigned j = i; while (j && samples[j - 1] > v) { samples[j] = samples[j - 1]; j--; } samples[j] = v; }
+                MLOG("presentation latency (render enqueue to actual display): p50 %.2f / p95 %.2f / max %.2f ms (%u frames)", samples[149], samples[284], samples[299], n);
+                n = 0;
+            }
+            pthread_mutex_unlock(&g_pq_mu);
+        }
     }];
     // Each frame is displayed for at least one present period: when the GPU completion time jitters around a 120 Hz refresh boundary, the paired "25 ms + 8.33 ms" stutter no longer appears
-    if (target_ts > 0) [dr present];
+    if (target_ts > 0 || low_latency) [dr present];
     else if (period > 0) [dr presentAfterMinimumDuration:period]; else [dr present];
 #endif
     (void)frame;
@@ -8692,7 +8741,7 @@ static void ext_wait(uint64_t v) { if (v && g_ext_ev) [g_q4 waitForEvent:g_ext_e
 static void snap_commit_wait(uint64_t v);
 static pq_item g_pq[PQ];
 static uint64_t g_pq_in;
-static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double);
+static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double, double);
 static double g_link_vperiod, g_link_vhalf;   // virtual ticks (link_range): seconds per counted tick (0 = every callback is a tick) and half a refresh of the screen
 
 @interface NvMetalDisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>
@@ -8746,7 +8795,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     pthread_mutex_unlock(&g_pq_mu);
     int submitted;
     ext_wait(it.ev_val); snap_commit_wait(it.snap_v);
-    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp); }
+    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp, it.t_in); }
     g_link_hold_until = submitted && it.period > 0.025 ? update.targetPresentationTimestamp + it.period : 0;
     if (!submitted) {
         pthread_mutex_lock(&g_pq_mu);
@@ -8848,7 +8897,7 @@ static void *present_main(void *arg) {
         pthread_mutex_unlock(&g_pq_mu);
         int submitted;
         ext_wait(it.ev_val); snap_commit_wait(it.snap_v);
-        @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, nil, 0); }
+        @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, nil, 0, it.t_in); }
         pthread_mutex_lock(&g_pq_mu); g_classic_busy = 0; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
         if (!submitted) {
             pthread_mutex_lock(&g_pq_mu);

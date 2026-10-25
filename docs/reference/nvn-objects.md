@@ -110,6 +110,14 @@ The game may also write into an NVN object directly, without an NVN call, throug
 - **Fix** (`hle_nvn.c`): the pool now grows on demand (256 KB segments, abort only beyond 1 GB; `hostseg_take`). A segment is released only when the game re-grants memory overlapping the guest bytes of the recording that jumped into it (`hostseg_release` in `AddCommandMemory`): the game records setup blocks once and keeps `CallCommands`-ing them for many frames, so recycling segments after a fixed number of frames would overwrite live recordings. An empty-pool grant of at most 4 KB outside a recording gets a 4 KB segment, a record larger than 256 KB gets a segment that holds it, and the cap counts every segment's bytes (`hostseg_size`).
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md) (the many small command buffers: its opening course, per the comment at `HOSTSEG_SZ` in `hle_nvn.c`), [Super Mario Odyssey](../../dm/games/0100000000010000/README.md) (it hands out many 512-byte grants before recording, and with no recording to reclaim them by, 256 KB each reached the cap entering the Wooded Kingdom: the 4 KB segments).
 
+### Texture snapshots overflowing a fixed-size upload list
+
+- **Symptom:** `CRASH sig=11 addr=0 pc=0` from `cmd_alloc_keep` while `nvnCommandBufferCopyBufferToTexture` records a stage thumbnail; the return address is the SDK wrapper's indirect call of a null user callback.
+- **Cause:** texture records carry a host snapshot of each texture object (128 bytes) so replay remains valid after the game finalizes it. SSBU's temporary upload list grants 256 bytes and registers the SDK's generic memory callback, but sets no user command-memory callback: its hardware upload fits. The host-only snapshot made the recording overflow and called that wrapper anyway.
+- **Fix:** `rec_snap` lends a host segment when the command's base record fits the remaining grant but its texture snapshots do not. Ordinary command-memory exhaustion still follows the normal callback path; snapshots and the linking JUMP remain counted by `GetCommandMemoryUsed` and retain their existing recording lifetime.
+- **Check:** `t_nvn` records an upload into a 256-byte grant, checks that no callback runs, follows its JUMP through the copy to END, verifies the texture snapshot survives object changes, and checks the bytes after the grant.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), version 13.0.3 (SDK wrapper at `main+0x31be0`, upload at `main+0x3793ef8`).
+
 ### What `GetCommandMemoryUsed` counts
 
 Games read this count as a position in their own command memory and size their heaps and slots from it, so it must be what NVN counts.

@@ -183,6 +183,14 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** the host reports add-on content from `DM_AOC_DIR`, one numbered folder per DLC index (title ID − base − 0x1000) holding that DLC's RomFS. `build_ipa_from_nsp.py` extracts the DLC NSPs in the folder with `nx_extract --aoc`, `build_ipa.sh` copies them to `<App>/aoc/`, and the app sets `DM_AOC_DIR`. `aoc::CountAddOnContent` / `ListAddOnContent` report those indices (`hle_misc.c`), and `fs::MountAddOnContent` mounts the folder read-only (`hle_fs.c`). D2R keeps its fixed `{1}` without `DM_AOC_DIR`; `DM_AOC_OWNED=0` reports none.
 - **Found on:** [Fire Emblem Engage](../../dm/games/0100A6301214E000/README.md): its two DLC packages each hold one empty marker file (`e0`, `h0`), and the content is already in update 2.0.0. `DLCManager.RefreshHasList` marks a content owned when its mount succeeded (probe `main+0x29f3c88`).
 
+### Installed DLC hidden by the enumeration table limit
+
+- **Symptom:** the app contains 99 DLC folders but logs `aoc: reporting 64 add-on contents`; Joker, Hero, Banjo & Kazooie, Terry and Sora are absent from SSBU's fighter roster.
+- **Cause:** `aoc_load` stopped directory enumeration at its fixed 64-entry table, before sorting. Which installed entries survived depended on directory iteration order.
+- **Fix:** the table holds every index in the loader's accepted range (1 through 2000), rather than truncating at 64. No additional content is reported unless its extracted entry exists in `DM_AOC_DIR`.
+- **Check:** `t_aoc` enumerates 99 sparse indices, checks their order and pages beyond entry 64, the short final page, and the existing DLC-off and no-directory cases.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), version 13.0.3 with 99 installed DLC packages.
+
 ### Add-on content mount cache sized as RomFS working memory
 
 - **Symptom:** SIGSEGV in `crypto::detail::CbcModeAes128Helper::DecryptBlocks` with a null destination (`main+0x8737e8`, right after `aoc:` is mounted).

@@ -870,7 +870,19 @@ static void copy_view(view_t *dst, uint8_t *has, const NVNtextureView *v) { *has
 // Records with textures snapshot the texture objects (0x80 bytes each, after the record struct) and replay reads the snapshots: an NVN command no longer depends on the API object once recorded, and the game may finalize, free or reuse it before submitting.
 // Unity (Engage) does so when it changes scenes; only the object pointer used to be recorded, and replay read other data (a texture 1869367126 high, a Metal assertion abort).
 #define SNAP_OFF(T) ((sizeof(T) + 7) & ~(size_t)7)
-#define REC_SNAP(c, OP, T, K) ((T *)rec((c), (OP), SNAP_OFF(T) + (size_t)(K) * sizeof(tex_t)))
+static void *rec_snap(NVNcommandBuffer *c, uint32_t op, size_t payload, size_t snapshots) {
+    cmd_t *o = CB(c);
+    size_t base = 8 + payload, full = base + snapshots * sizeof(tex_t);
+    // Texture snapshots are host bookkeeping, not NVN commands. If the command
+    // itself fits but its snapshots do not, do not ask the game for more memory:
+    // fixed-size upload lists can have a registered wrapper with no user callback.
+    if (o->cur && o->end >= o->cur && (size_t)(o->end - o->cur) >= base + OP_RESERVE && (size_t)(o->end - o->cur) < full + OP_RESERVE) {
+        size_t n = hostseg_size(o, 0, full + OP_RESERVE);
+        cmd_new_segment(o, hostseg_take(o, n), n);
+    }
+    return rec(c, op, payload + snapshots * sizeof(tex_t));
+}
+#define REC_SNAP(c, OP, T, K) ((T *)rec_snap((c), (OP), SNAP_OFF(T), (size_t)(K)))
 static const tex_t *tex_snap(void *rec_, size_t off, int k, const NVNtexture *t, uint64_t ra) {
     if (!t) return NULL;
     tex_t *s = (tex_t *)((uint8_t *)rec_ + off) + k;
@@ -1214,6 +1226,8 @@ NVN(nvnWindowBuilderSetPresentInterval, void, NVNwindowBuilder *b, int v) { WB(b
 NVN(nvnWindowInitialize, NVNboolean, NVNwindow *w, const NVNwindowBuilder *b) {
     const win_builder_t *s = (const win_builder_t *)b; win_t *o = (win_t *)w;
     memset(o, 0, sizeof *o); o->magic = MAGIC('W', 'I', 'N', 'D'); o->native = s->native; o->ntex = s->ntex; o->interval = s->interval;
+    extern uint8_t *dm_fps_state;
+    if (dm_fps_state && __atomic_load_n((uint32_t *)(dm_fps_state + 0x3c), __ATOMIC_RELAXED) && o->ntex > 2) o->ntex = 2;
     memcpy(o->tex, s->tex, sizeof o->tex);
     for (int i = 0; i < o->ntex; i++) if (o->tex[i]) mtl_xv_window_tex(CTX(o->tex[i])->serial);
     LOG("[nvn] WindowInitialize swap chain %d textures, interval %d, first %dx%d format %#x", o->ntex, o->interval,

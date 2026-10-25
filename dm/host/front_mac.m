@@ -32,6 +32,27 @@ int front_screen_max_fps(void) { return g_screen_fps; }
 // for 60 and 30 fps), for this app only: macOS switches it back when the host quits, crashes included, and leaving fullscreen or that screen switches it back at once. A window keeps the
 // screen's rate, because the switch changes the whole screen for every app and most external screens go black for a second or more. A screen with no such mode keeps the virtual ticks
 static NSWindow *g_win; static _Atomic int g_match_want;   // the game's window; the frame rate to match (0 = not known yet), written by the present thread only
+void front_shader_progress(unsigned long done, unsigned long total) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        static NSTextField *label; static NSView *cover;
+        if (!g_win) return;
+        if (!total || done >= total) { [cover removeFromSuperview]; cover = nil; label = nil; return; }
+        if (!label) {
+            NSRect b = g_win.contentView.bounds;
+            cover = [[NSView alloc] initWithFrame:b];
+            cover.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+            cover.wantsLayer = YES; cover.layer.backgroundColor = NSColor.blackColor.CGColor;
+            [g_win.contentView addSubview:cover];
+            label = [NSTextField labelWithString:@""];
+            label.frame = NSMakeRect(20, (b.size.height - 36) / 2, b.size.width - 40, 36);
+            label.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin | NSViewMaxYMargin;
+            label.alignment = NSTextAlignmentCenter; label.textColor = NSColor.whiteColor;
+            label.font = [NSFont systemFontOfSize:20 weight:NSFontWeightSemibold];
+            [cover addSubview:label];
+        }
+        label.stringValue = [NSString stringWithFormat:@"Preparing graphics: %lu / %lu", done, total];
+    });
+}
 static CGDirectDisplayID g_match_id; static CGDisplayModeRef g_match_orig;   // main thread: the screen this host switched and its own mode (NULL = none switched)
 static double mode_hz(CGDisplayModeRef m) { double hz = CGDisplayModeGetRefreshRate(m); return hz > 0 ? hz : 0; }   // 0 = not known (older built-in screens report none)
 static int hz_multiple(double hz, int fps) { double k = round(hz / fps); return k >= 1 && fabs(hz / fps - k) < 0.01; }   // 59.94 Hz counts as 60

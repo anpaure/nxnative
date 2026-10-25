@@ -29,6 +29,8 @@ _Static_assert(sizeof(NpadState) == 0x28, "NpadState");
 // (dm_pad_set_player). Press edges are latched until the game's next read so short presses are not lost
 static _Atomic uint64_t g_btn, g_axes, g_latch, g_pad_btn[DM_PLAYERS], g_pad_axes[DM_PLAYERS], g_pad_latch[DM_PLAYERS];
 static _Atomic int64_t g_sampling = 1 << 16;   // starts high so the history entries below the newest keep positive sampling numbers
+static _Atomic int g_input_trace = -1;
+static int input_trace(void) { int v = atomic_load(&g_input_trace); if (v < 0) { const char *e = getenv("DM_INPUT_TRACE"); v = e && atoi(e); atomic_store(&g_input_trace, v); } return v; }
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
 }
@@ -52,6 +54,7 @@ void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t 
 void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     if (p < 0 || p >= DM_PLAYERS) return;
     uint64_t old = atomic_exchange(&g_pad_btn[p], buttons); atomic_fetch_or(&g_pad_latch[p], buttons & ~old); atomic_store(&g_pad_axes[p], pack(lx, ly, rx, ry));
+    if (input_trace() && old != buttons) LOG("input published: player %d buttons %#llx at present %llu time %llu ns", p + 1, (unsigned long long)buttons, (unsigned long long)dm_guest_frame(), (unsigned long long)now_ns());
     if (!p) shake_note();
 }
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { dm_pad_set_player(0, buttons, lx, ly, rx, ry); }
@@ -245,6 +248,10 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     if (s->rx > STICK_THRESH) b |= 1u << 22;
     if (s->ry < -STICK_THRESH) b |= 1u << 23;
     s->buttons = b;
+    if (input_trace()) {
+        static _Atomic uint64_t previous[DM_PLAYERS];
+        if (atomic_exchange(&previous[pl], b) != b) LOG("input read: player %d buttons %#llx at present %llu time %llu ns", pl + 1, (unsigned long long)b, (unsigned long long)dm_guest_frame(), (unsigned long long)now_ns());
+    }
     s->attributes = ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WIRED | ATTR_RIGHT_CONN | ATTR_RIGHT_WIRED : ATTR_LEFT_CONN | ATTR_RIGHT_CONN);
 }
 // GetNpadStates(out, n, id): newest first, n entries: the current state repeated with consecutive sampling numbers. The host keeps no history, but on hardware the

@@ -87,6 +87,22 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Check:** here (a built-in 120 Hz screen, a multiple of every link rate) a harness drove `front_mac.m` asked for 50 fps: no switch in the window, 120 → 50 Hz in fullscreen, 120 Hz again on leaving it, and 120 Hz after quitting in fullscreen; at 60 fps and with `DM_SCREEN_MATCH=0` nothing switched.
 - **Not checked:** the link's new range after a switch has not run here (Hades windowed and fullscreen paced at 60 as before).
 
+## Input-to-display latency
+
+### Optional render-queue stubs at the original simulation rate
+
+- **Symptom:** a responsive 60 fps frame loop still shows old game state after input.
+- **Cause:** SSBU keeps a pending render-dispatch batch and promotes it only after processing the current batch. Its render target is selected for that delayed triple-buffered queue.
+- **Fix:** build-ID-gated stubs in its `patches.py` can promote the pending batch before the wait/submit and select the target for two active textures. `DM_RENDER_LOW_LATENCY=1` sets state-page word +0x3c and caps that window's active rotation at two textures. The profile leaves target fps at 0, so the game keeps its original 60 Hz simulation. With the flag off, the stubs execute the original instructions. This switch requires a profile with matching queue stubs.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), 13.0.3 main `730c2141…`; the pending-batch flush and target selection were checked by disassembly, menus and a battle.
+
+### Optional immediate Mac presentation
+
+- **Symptom:** frames wait in macOS presentation after the game enqueues them.
+- **Fix:** `DM_PRESENT_LOW_LATENCY=1` uses two CAMetalLayer drawables, disables display sync and presents immediately instead of adding a minimum display duration. The game's own pacing remains unchanged; use with direct presentation (`DM_PRESENT_LINK=0`). This can trade tearing resistance for lower delay. The default remains synchronized presentation.
+- **Check:** the log reports render enqueue to the drawable's actual `presentedTime` (p50, p95, maximum over 300 displayed frames). This is presentation latency, not a physical button-to-photon measurement.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), M4 Max and built-in display.
+
 ## CPU cost and pacing
 
 ### Submissions handed to the GPU in segments

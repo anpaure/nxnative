@@ -186,6 +186,8 @@ The bundle holds what the IPA holds, with the Mac's shader libraries:
   Resources/AppIcon.icns
 ```
 
+If the native host needs a different Apple SDK from the Metal compiler, use `scripts/build_ssbu_mac.py` with the same pipeline arguments and set `DM_MAC_DEVELOPER_DIR` to the native SDK's developer directory (for example, `/Library/Developer/CommandLineTools`). It selects that SDK only for host and launcher builds; the pipeline's existing Xcode selection continues to supply the Metal compiler.
+
 The RomFS, the shader libraries and the DLC are APFS clones (`cp -c`) of the build's files when the app is on the same APFS volume, so they take no space of their own; on another volume they are copied, after a check for free space. The app is written as `<app>.partial` and replaces the old one only when it is complete.
 
 The packer records the rewritten module files and their tables in `DMModuleFiles`, and rejects a module without its fixups table. Before starting the host, the launcher checks that every recorded file is readable and is a regular file, so losing a binary and its table together still produces the missing-data alert. The alert passes the game name and message as AppleScript arguments, preserving quotes and backslashes in game names.
@@ -293,6 +295,13 @@ The lines name shaders by content key and hold no compiled code and nothing pers
 Record on the game version you ship. At launch the log names each list it read and its line count (`pipeline prewarm list …: N lines`), or says that `pso_user.tsv` does not exist yet.
 
 During rendering, a pipeline miss compiles and caches the demanded pipeline before scanning subsequent draws for speculative work. The scan admits at most two new jobs, with at most two speculative compilations outstanding; completed predictions remain available by exact key. This limit does not apply to the startup warmer. `t_pso_pending` checks scheduling and ownership with a gated compiler; it does not establish that the two-job budget is optimal on every device or remove the cost of compiling an unseen pipeline.
+
+### Waiting for graphics warmup at launch
+
+`DM_PSO_PREWARM=blocking` prepares the bundled and user pipeline lists before the first draw uses them. `DM_PSO_PREWARM=all` additionally opens every translated shader library in the shader map, prepares its functions and builds every compute pipeline before rendering. The Mac window shows progress while the full library pass runs. With neither setting, warmup runs in the background as before. `DM_PSO_MANIFEST=off` still disables warmup.
+
+These modes preserve the normal user pipeline list and pipeline archives. They move known work to startup; they cannot enumerate every unseen render-state combination. On SSBU 13.0.3 / M4 Max, the final app prepared 35,012 shader libraries, all 53 compute pipelines and 1,108 recorded render pipelines in 15.7 seconds. See the [game note](../dm/games/01006A800016E000/README.md#local-mac-performance-and-save-testing-1303) for test conditions and limits. A new render-pipeline combination can still require a demand compile even after every shader library is loaded.
+
 ### Pipeline bases and the pipeline archive
 
 Concurrent requests for the same base share its in-progress build and result; unrelated bases can compile in parallel. Rasterizing pipelines without a fragment function use the `MTLDevice` path so depth-only draws keep their depth writes: Metal 4 requires a fragment function when rasterization is enabled. Transform-feedback pipelines, whose rasterization is disabled, can still use Metal 4.

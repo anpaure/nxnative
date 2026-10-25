@@ -227,6 +227,11 @@ void dm_fps_state_apply(void) {
     const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f;
     if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 1.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to 1.0; keeping the game's size", rs); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
+    // Optional render-queue stubs share this page while leaving target fps at 0.
+    // Enable only for a profile whose registered stubs implement this flag.
+    const char *ll = getenv("DM_RENDER_LOW_LATENCY"); uint32_t low_latency = ll && atoi(ll);
+    memcpy(dm_fps_state + 0x3c, &low_latency, sizeof low_latency);
+    if (low_latency) LOG("%s: low-latency render-queue stubs enabled (simulation rate unchanged)", g_fps_mod);
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
     LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
 }

@@ -9,7 +9,10 @@
 //     Engage: F001 → 1 (E0), F002 → 2 (H0); the content itself is in the 2.0.0 update's RomFS and each DLC package holds one empty marker file; the game calls MountAddOnContent for each index ListAddOnContent returns (hle_fs.c).
 //   No DM_AOC_DIR: none (on a Switch 2 Mario 1.2.1 uses it to tell whether the upgrade pack is owned, and the user has no Mario add-on content files).
 //   DM_AOC_OWNED=0: always none (test switch, for runs without the DLC).
-static int g_aoc[64], g_naoc = -1;
+#define AOC_INDEX_MAX 2000
+// Keep room for every accepted index. A 64-entry table silently hid installed
+// DLC according to directory iteration order (SSBU ships 99 separate licences).
+static int g_aoc[AOC_INDEX_MAX], g_naoc = -1;
 static int aoc_int_cmp(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
 static void aoc_load(void) {
     if (g_naoc >= 0) return;
@@ -20,7 +23,7 @@ static void aoc_load(void) {
         why = dir; DIR *d = opendir(dir); struct dirent *ent;
         while (d && (ent = readdir(d)) && g_naoc < (int)(sizeof g_aoc / sizeof *g_aoc)) {
             char *end; long i = strtol(ent->d_name, &end, 10);
-            if (ent->d_name[0] >= '1' && ent->d_name[0] <= '9' && !*end && i <= 2000) g_aoc[g_naoc++] = (int)i;
+            if (ent->d_name[0] >= '1' && ent->d_name[0] <= '9' && !*end && i <= AOC_INDEX_MAX) g_aoc[g_naoc++] = (int)i;
         }
         if (d) closedir(d);
         qsort(g_aoc, g_naoc, sizeof *g_aoc, aoc_int_cmp);
