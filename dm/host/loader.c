@@ -229,9 +229,10 @@ void dm_fps_state_apply(void) {
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     // Optional render-queue stubs share this page while leaving target fps at 0.
     // Enable only for a profile whose registered stubs implement this flag.
-    const char *ll = getenv("DM_RENDER_LOW_LATENCY"); uint32_t low_latency = ll && atoi(ll);
+    const char *ll = getenv("DM_RENDER_LOW_LATENCY"); long level = ll ? strtol(ll, NULL, 10) : 0;
+    uint32_t low_latency = level > 0 ? (uint32_t)(level > 3 ? 3 : level) : 0;
     memcpy(dm_fps_state + 0x3c, &low_latency, sizeof low_latency);
-    if (low_latency) LOG("%s: low-latency render-queue stubs enabled (simulation rate unchanged)", g_fps_mod);
+    if (low_latency) LOG("%s: low-latency render-queue stubs level %u (simulation rate unchanged)", g_fps_mod, low_latency);
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
     LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
 }

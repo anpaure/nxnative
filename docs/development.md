@@ -300,7 +300,7 @@ During rendering, a pipeline miss compiles and caches the demanded pipeline befo
 
 `DM_PSO_PREWARM=blocking` prepares the bundled and user pipeline lists before the first draw uses them. `DM_PSO_PREWARM=all` additionally opens every translated shader library in the shader map, prepares its functions and builds every compute pipeline before rendering. The Mac window shows progress while the full library pass runs. With neither setting, warmup runs in the background as before. `DM_PSO_MANIFEST=off` still disables warmup.
 
-These modes preserve the normal user pipeline list and pipeline archives. They move known work to startup; they cannot enumerate every unseen render-state combination. On SSBU 13.0.3 / M4 Max, the final app prepared 35,012 shader libraries, all 53 compute pipelines and 1,108 recorded render pipelines in 15.7 seconds. See the [game note](../dm/games/01006A800016E000/README.md#local-mac-performance-and-save-testing-1303) for test conditions and limits. A new render-pipeline combination can still require a demand compile even after every shader library is loaded.
+These modes preserve the normal user pipeline list and pipeline archives. They move known work to startup; they cannot enumerate every unseen render-state combination. On SSBU 13.0.3 / M4 Max, an app test prepared 35,012 shader libraries, all 53 compute pipelines and 1,108 recorded render pipelines in 15.7 seconds. See the [game note](../dm/games/01006A800016E000/README.md#local-mac-performance-and-save-testing-1303) for test conditions and limits. A new render-pipeline combination can still require a demand compile even after every shader library is loaded.
 
 ### Pipeline bases and the pipeline archive
 

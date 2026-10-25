@@ -4770,6 +4770,7 @@ static void warm_worker(NSArray<NSString *> *paths) {
                 if (++scanned % 1000 == 0 || scanned == keys.count) { MLOG("all-shader prewarm: %lu / %lu shader libraries prepared", scanned, (unsigned long)keys.count); front_shader_progress(scanned, keys.count); }
             } }
         }
+        g_warm_shaders = dict.count;   // Include shaders loaded by pipeline rows as well as explicit S rows.
         MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, warmup time %.1f ms; shader keys not in the shader map (another game version) %llu",
              g_warm_shaders, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6, g_warm_skip_stale);
         if (g_comp4) MLOG("pipeline bases so far: %llu compiled, %llu from the archive, %llu reused (%.1f ms for the bases); %llu specializations, %llu pipelines without a base (MTLDevice)",

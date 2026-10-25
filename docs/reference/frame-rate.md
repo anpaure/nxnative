@@ -93,8 +93,8 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 
 - **Symptom:** a responsive 60 fps frame loop still shows old game state after input.
 - **Cause:** SSBU keeps a pending render-dispatch batch and promotes it only after processing the current batch. Its render target is selected for that delayed triple-buffered queue.
-- **Fix:** build-ID-gated stubs in its `patches.py` can promote the pending batch before the wait/submit and select the target for two active textures. `DM_RENDER_LOW_LATENCY=1` sets state-page word +0x3c and caps that window's active rotation at two textures. The profile leaves target fps at 0, so the game keeps its original 60 Hz simulation. With the flag off, the stubs execute the original instructions. This switch requires a profile with matching queue stubs.
-- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), 13.0.3 main `730c2141…`; the pending-batch flush and target selection were checked by disassembly, menus and a battle.
+- **Fix:** build-ID-gated stubs in its `patches.py` use state-page word +0x3c (`DM_RENDER_LOW_LATENCY`): 1 promotes the pending batch and rotates two textures; 2 also submits it before present/acquire and selects the current target; 3 additionally moves model updates, fighter recording and dispatch after scene update. The last mode keeps the original queue locking and worker wait while preserving general/SIMD registers and NZCV at its inline insertion. The profile leaves target fps at 0, so the game keeps its original simulation and catch-up logic. With 0, the stubs execute the original instructions. This switch requires a profile with matching stubs.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), 13.0.3 main `730c2141…`; original-byte assertions and disassembly guard each site; menu and Training captures measure the first response, with register/queue scenarios exercised by the optional Unicorn test. See the game note for measurements and remaining validation.
 
 ### Optional immediate Mac presentation
 
