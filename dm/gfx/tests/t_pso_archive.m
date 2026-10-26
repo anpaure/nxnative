@@ -128,7 +128,26 @@ static void concurrent_bases(int fail) {
     g_comp4 = gate->compiler;
     if (fail) { NSError *err = nil; EXPECT("concurrent: failed base can retry", 1, pso_build(ds[0], &err) != nil); }
 }
+static void archive_order(void) {
+    NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    for (NSString *name in @[@"00001.mtl4a", @"00002.mtl4a", @"00003.mtl4a", @"not-an-archive.txt"]) {
+        NSUInteger size = [name isEqual:@"00001.mtl4a"] ? 128 : 8;
+        [[NSMutableData dataWithLength:size] writeToFile:[dir stringByAppendingPathComponent:name] atomically:YES];
+    }
+    unsetenv("DM_PSO_ARCHIVE_ORDER");
+    NSArray *names = arch_names(dir);
+    EXPECT("archive order: only archives", 3, names.count);
+    EXPECT("archive order: broad older cache first", 1, [names[0] isEqual:@"00001.mtl4a"]);
+    EXPECT("archive order: newest wins equal-size tie", 1, [names[1] isEqual:@"00003.mtl4a"]);
+    setenv("DM_PSO_ARCHIVE_ORDER", "newest", 1); names = arch_names(dir);
+    EXPECT("archive order: original-order comparison", 1, [names[0] isEqual:@"00003.mtl4a"]);
+    EXPECT("archive order: comparison retains older archives", 1, [names[2] isEqual:@"00001.mtl4a"]);
+    unsetenv("DM_PSO_ARCHIVE_ORDER");
+    [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
+}
 int main(void) { @autoreleasepool {
+    archive_order();
     char dir[] = "/tmp/t_pso_archive.XXXXXX"; if (!mkdtemp(dir)) abort();
     setenv("DM_PSO_ARCHIVE", dir, 1);
     mtl_init(); g_q = [g_dev newCommandQueue]; NSError *err = nil;

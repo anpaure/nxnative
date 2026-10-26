@@ -394,6 +394,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - `fragmentFunction main0 cannot be used to build a pipeline state` (a Metal validation assertion). → [Function constants specialized at load](../reference/shaders.md#function-constants-specialized-at-load)
 - a pipeline for a vertex shader that writes `render_target_array_index` cannot be built. → [Layer-writing vertex shaders get the triangle class](../reference/shaders.md#layer-writing-vertex-shaders-get-the-triangle-class)
 - the picture bright green and white from some scene on, in runs with pipelines compiled on demand (prewarm lists off or short) and in none with `DM_NVN_PREDICT=0`. → [The precompile look-ahead restores the scissor](../reference/shaders.md#the-precompile-look-ahead-restores-the-scissor)
+- a repeat launch spends longer preparing already-cached pipelines after more scenes have been played, without compiling new pipeline bases. → [Small recent pipeline archives searched before a broad cache](../reference/shaders.md#small-recent-pipeline-archives-searched-before-a-broad-cache)
 - even a warm-cache launch spends seconds opening every shader library before drawing. → [Full library warmup serialized independent loads](../reference/shaders.md#full-library-warmup-serialized-independent-loads)
 - the first boot sat on the loading clock for about a minute, the CPU idle, with every file read done after 12 s. → [A cold Metal cache looks like a long load](../reference/shaders.md#a-cold-metal-cache-looks-like-a-long-load)
 

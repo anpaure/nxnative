@@ -593,6 +593,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [OCTOPATH TRAVELER II](../../dm/games/0100A3501946E000/README.md): from Castti's opening flashback and the battlefield of Hikari's opening on.
 - **Check:** found by bisecting with four runs started at once on copies of one save: `DM_NVN_PREDICT=0` fixed it, a look-ahead that compiled nothing did not, and of its parts only the state ops brought it back; four runs green before the fix, four right after it.
 
+### Small recent pipeline archives searched before a broad cache
+
+- **Symptom:** a repeat launch spends longer preparing already-cached pipelines after more scenes have been played, without compiling new pipeline bases.
+- **Cause:** each base lookup tried the newest archive files first. A few small recent additions were searched before the large compacted archive that held most bases, multiplying failed lookups across thousands of pipelines even below the compaction threshold.
+- **Fix:** `arch_names` orders files by decreasing byte size, with newest names first for equal sizes. Size is a coverage heuristic; a miss still searches every remaining archive. `DM_PSO_ARCHIVE_ORDER=newest` retains the original order for comparison. Archive contents, compaction and cache-miss compilation are unchanged.
+- **Check:** `t_pso_archive` checks filtering, size order, tie order and the comparison switch, alongside its Metal pixel, reuse, concurrency and compaction tests. Native comparisons use the same cloned seven-file archive, manifest and save; results are in the game note.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), 13.0.3 Mac.
+
 ### Full library warmup serialized independent loads
 
 - **Symptom:** even a warm-cache launch spends seconds opening every shader library before drawing.

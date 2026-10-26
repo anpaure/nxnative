@@ -4417,6 +4417,17 @@ static nvn_hmap g_pbase = {.klen = sizeof(pbase_key)};
 static nvn_hmap g_pbase_pending = {.klen = sizeof(pbase_key)};
 static os_unfair_lock g_pbase_lock = OS_UNFAIR_LOCK_INIT;
 static NSString *pso_user_path(void);
+static NSArray<NSString *> *arch_names(NSString *dir) {
+    NSArray<NSString *> *names = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"self ENDSWITH '.mtl4a'"]];
+    const char *e = getenv("DM_PSO_ARCHIVE_ORDER");
+    int newest = e && !strcmp(e, "newest");
+    NSMutableDictionary<NSString *, NSNumber *> *sizes = [NSMutableDictionary dictionary];
+    if (!newest) for (NSString *n in names) sizes[n] = @([[NSFileManager.defaultManager attributesOfItemAtPath:[dir stringByAppendingPathComponent:n] error:nil] fileSize]);
+    return [names sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSComparisonResult size = newest ? NSOrderedSame : [sizes[b] compare:sizes[a]];
+        return size == NSOrderedSame ? [b compare:a] : size;
+    }];
+}
 static void pso4_init(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -4430,9 +4441,10 @@ static void pso4_init(void) {
             ser = [g_dev newPipelineDataSetSerializerWithDescriptor:sd];
             NSMutableArray<id<MTL4Archive>> *arch = [NSMutableArray array]; uint64_t t0 = bp_now(); unsigned long long bytes = 0;
             NSMutableArray<NSString *> *runf = [NSMutableArray array];
-            NSArray<NSString *> *names = [[[NSFileManager.defaultManager contentsOfDirectoryAtPath:g_arch_dir error:nil] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"self ENDSWITH '.mtl4a'"]]
-                                          sortedArrayUsingSelector:@selector(compare:)];
-            for (NSString *n in names.reverseObjectEnumerator) {   // newest first
+            // A compacted archive usually covers far more bases than the small
+            // recent additions. Try larger archives first; every miss still
+            // falls through to all others. Equal sizes keep newest first.
+            for (NSString *n in arch_names(g_arch_dir)) {
                 NSString *p = [g_arch_dir stringByAppendingPathComponent:n]; NSError *ae = nil;
                 id<MTL4Archive> a = [g_dev newArchiveWithURL:[NSURL fileURLWithPath:p] error:&ae];
                 if (a) { [arch addObject:a]; [runf addObject:p]; bytes += [[NSFileManager.defaultManager attributesOfItemAtPath:p error:nil] fileSize]; }
