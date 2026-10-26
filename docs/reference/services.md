@@ -334,6 +334,13 @@ Most service calls can be found before they crash, before the first boot or the 
 
 ## Display, window and operation mode
 
+### Mouse pointer over the Mac game picture
+
+- **Symptom:** the desktop pointer remains visible over a controller-driven game.
+- **Cause:** the Mac game view did not define cursor rectangles, so AppKit kept the arrow cursor.
+- **Fix:** `DM_HIDE_CURSOR=1` gives `DmGameView` a transparent cursor rectangle covering its bounds. AppKit manages the cursor for that surface, without global hide/unhide counts; other surfaces retain their own cursors. The default remains visible for games that use mouse-to-touch input.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), Mac.
+
 ### `vi::CreateLayer` with the layer's size
 
 - **Symptom:** SIGSEGV in `vi::CreateLayer(Layer**, Display*, int, int)` (`sdk+0x3f9bc4`, from SDL3's Switch video driver at `main+0x239304`).

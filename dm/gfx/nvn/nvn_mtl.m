@@ -4697,18 +4697,65 @@ static void warm_enqueue(WarmItem *item) {
     os_unfair_lock_unlock(&g_warm_lock);
 }
 __attribute__((weak)) void front_shader_progress(unsigned long done, unsigned long total) { (void)done; (void)total; }
+// All-mode loads independent libraries before building pipelines. Metal objects,
+// reflection and per-shader state are private to each job; shared function notes
+// and C1 banks already have locks. Publish the completed shaders on one thread.
+static void warm_all_shaders(NSMutableDictionary<NSString *, NvShader *> *dict, NSUInteger total) {
+    NSArray<NSString *> *keys = [[g_shmap allKeys] sortedArrayUsingSelector:@selector(compare:)];
+    NSUInteger jobs = MIN((NSUInteger)8, MAX((NSUInteger)1, NSProcessInfo.processInfo.activeProcessorCount));
+    const char *e = getenv("DM_PSO_WARM_JOBS");
+    if (e && *e) { char *end; long n = strtol(e, &end, 10); if (!*end && n >= 1 && n <= 16) jobs = (NSUInteger)n; }
+    (void)rt_range_on();   // Initialize this shader-load switch before workers read it.
+    NSLock *lock = [NSLock new];
+    __block NSUInteger next = 0, done = 0;
+    MLOG("all-shader warmup workers: %lu", (unsigned long)jobs);
+    front_shader_progress(0, total);
+    dispatch_apply(jobs, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t worker) {
+        (void)worker;
+        for (;;) { @autoreleasepool {
+            [lock lock]; NSUInteger i = next++; [lock unlock];
+            if (i >= keys.count) break;
+            NSString *mapkey = keys[i], *key = [mapkey stringByAppendingString:@"_b"];
+            int stage = stage_of(g_shmap[mapkey]);
+            NvShader *sh = stage >= 0 ? shader_load(key, stage, 0) : nil;
+            [lock lock];
+            if (sh) dict[key] = sh;
+            if (++done % 1000 == 0 || done == keys.count) {
+                MLOG("all-shader prewarm: %lu / %lu shader libraries prepared", (unsigned long)done, (unsigned long)keys.count);
+                front_shader_progress(done, total);
+            }
+            [lock unlock];
+        } }
+    });
+    for (NSString *mapkey in keys) {
+        NSString *key = [mapkey stringByAppendingString:@"_b"]; NvShader *sh = dict[key];
+        if (sh) { WarmItem *item = [WarmItem new]; item->kind = 0; item->key = key; item->shader = sh; warm_enqueue(item); }
+    }
+}
 static void warm_worker(NSArray<NSString *> *paths) {
     @autoreleasepool {
         NSMutableDictionary<NSString *, NvShader *> *dict = [NSMutableDictionary dictionary];
         NSMutableSet<NSString *> *seen = [NSMutableSet set];
         NSMutableSet<NSString *> *compute_done = [NSMutableSet set];
+        const char *mode = getenv("DM_PSO_PREWARM");
+        int all = mode && !strcmp(mode, "all");
+        NSUInteger total = g_shmap.count + 1, progress = g_shmap.count;
+        if (all) for (NSString *path in paths) {
+            NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            for (NSString *line in [txt componentsSeparatedByString:@"\n"]) if (line.length && ![line hasPrefix:@"#"]) total++;
+        }
+        uint64_t phases = bp_now();
+        if (all) warm_all_shaders(dict, total);
+        uint64_t libraries_done = bp_now();
         for (NSString *path in paths) {
             NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             if (!txt) { MLOG("[RED] cannot read prewarm list: %s", path.UTF8String); continue; }
             { unsigned long nl = 0; for (NSString *l in [txt componentsSeparatedByString:@"\n"]) nl += l.length && ![l hasPrefix:@"#"];
               MLOG("pipeline prewarm list %s: %lu lines", path.UTF8String, nl); }   // Diagnostics: how many lines each manifest gave (when a device warms up 0, shows which one was missing)
             for (NSString *line in [txt componentsSeparatedByString:@"\n"]) {
-                if (!line.length || [line hasPrefix:@"#"] || [seen containsObject:line]) continue;
+                if (!line.length || [line hasPrefix:@"#"]) continue;
+                if (all && ++progress % 32 == 0) front_shader_progress(progress, total);
+                if ([seen containsObject:line]) continue;
                 [seen addObject:line];
                 NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
                 if (!c.count) continue;
@@ -4747,11 +4794,8 @@ static void warm_worker(NSArray<NSString *> *paths) {
                 }
             }
         }
-        const char *mode = getenv("DM_PSO_PREWARM");
-        if (mode && !strcmp(mode, "all")) {
+        if (all) {
             NSArray<NSString *> *keys = [[g_shmap allKeys] sortedArrayUsingSelector:@selector(compare:)];
-            unsigned long scanned = 0;
-            front_shader_progress(0, keys.count);
             for (NSString *mapkey in keys) { @autoreleasepool {
                 NSString *key = [mapkey stringByAppendingString:@"_b"];
                 int stage = stage_of(g_shmap[mapkey]);
@@ -4767,10 +4811,11 @@ static void warm_worker(NSArray<NSString *> *paths) {
                     if (ps) { WarmItem *item = [WarmItem new]; item->kind = 2; item->key = key; item->shader = cs; item->object = ps; warm_enqueue(item); g_warm_cps++; [compute_done addObject:key]; }
                     else MLOG("[RED] full warmup compute pipeline creation failed (%s): %s", key.UTF8String, e.localizedDescription.UTF8String);
                 }
-                if (++scanned % 1000 == 0 || scanned == keys.count) { MLOG("all-shader prewarm: %lu / %lu shader libraries prepared", scanned, (unsigned long)keys.count); front_shader_progress(scanned, keys.count); }
             } }
         }
+        MLOG("prewarm phases: all libraries %.1f ms, manifest pipelines / remaining compute %.1f ms", (libraries_done - phases) / 1e6, (bp_now() - libraries_done) / 1e6);
         g_warm_shaders = dict.count;   // Include shaders loaded by pipeline rows as well as explicit S rows.
+        if (all) front_shader_progress(total, total);
         MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, warmup time %.1f ms; shader keys not in the shader map (another game version) %llu",
              g_warm_shaders, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6, g_warm_skip_stale);
         if (g_comp4) MLOG("pipeline bases so far: %llu compiled, %llu from the archive, %llu reused (%.1f ms for the bases); %llu specializations, %llu pipelines without a base (MTLDevice)",

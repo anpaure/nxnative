@@ -120,6 +120,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - texture creation returns null right after the inline keyboard's `Initialize`, then a null read at `main+0x7713044`. → [Inline keyboard window size, setters and callbacks](../reference/services.md#inline-keyboard-window-size-setters-and-callbacks)
 - the hunter's name box stays empty, then stays open with the name in it (Monster Hunter Rise, character creation). → [Inline keyboard text callbacks and `Calc` states](../reference/services.md#inline-keyboard-text-callbacks-and-calc-states)
 - `CRASH sig=10` at a heap address, called from `main+0x6bca160` right after the name was entered (Monster Hunter Rise); crash in `lmem::AllocateFromExpHeap` under `ngc::ProfanityFilter::MaskProfanityWordsInText` right after the character name is entered (DARK SOULS: REMASTERED); filter methods among the undefined imports with no hook, found from the import list before they were met (The Great Ace Attorney Chronicles). → [`nn::ngc::ProfanityFilter` vtable and by-name overloads](../reference/services.md#nnngcprofanityfilter-vtable-and-by-name-overloads)
+- the desktop pointer remains visible over a controller-driven game. → [Mouse pointer over the Mac game picture](../reference/services.md#mouse-pointer-over-the-mac-game-picture)
 - SIGSEGV in `vi::CreateLayer(Layer**, Display*, int, int)` (`sdk+0x3f9bc4`, from SDL3's Switch video driver at `main+0x239304`). → [`vi::CreateLayer` with the layer's size](../reference/services.md#vicreatelayer-with-the-layers-size)
 - SIGSEGV in `vi::SetLayerCrop`. → [vi layer and display calls without vi service objects](../reference/services.md#vi-layer-and-display-calls-without-vi-service-objects)
 - SIGSEGV in `android::Surface::getQueuedFrameNumber` under `nn::vi::GetLatestFrameNumber`. → [Layer frame numbers](../reference/services.md#layer-frame-numbers)
@@ -393,6 +394,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - `fragmentFunction main0 cannot be used to build a pipeline state` (a Metal validation assertion). → [Function constants specialized at load](../reference/shaders.md#function-constants-specialized-at-load)
 - a pipeline for a vertex shader that writes `render_target_array_index` cannot be built. → [Layer-writing vertex shaders get the triangle class](../reference/shaders.md#layer-writing-vertex-shaders-get-the-triangle-class)
 - the picture bright green and white from some scene on, in runs with pipelines compiled on demand (prewarm lists off or short) and in none with `DM_NVN_PREDICT=0`. → [The precompile look-ahead restores the scissor](../reference/shaders.md#the-precompile-look-ahead-restores-the-scissor)
+- even a warm-cache launch spends seconds opening every shader library before drawing. → [Full library warmup serialized independent loads](../reference/shaders.md#full-library-warmup-serialized-independent-loads)
 - the first boot sat on the loading clock for about a minute, the CPU idle, with every file read done after 12 s. → [A cold Metal cache looks like a long load](../reference/shaders.md#a-cold-metal-cache-looks-like-a-long-load)
 
 ## Game state

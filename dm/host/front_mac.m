@@ -238,6 +238,21 @@ static void pads_start(void) {
 // not a window-wide event monitor, so clicks on the title bar, the window buttons and the resize edges still reach AppKit.
 @interface DmGameView : NSView @end
 @implementation DmGameView
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    const char *e = getenv("DM_HIDE_CURSOR");
+    if (!e || !atoi(e)) return;
+    static NSCursor *hidden;
+    if (!hidden) {
+        NSBitmapImageRep *pixels = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:16 pixelsHigh:16 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:64 bitsPerPixel:32];
+        memset(pixels.bitmapData, 0, pixels.bytesPerRow * pixels.pixelsHigh);
+        NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(16, 16)]; [image addRepresentation:pixels];
+        hidden = [[NSCursor alloc] initWithImage:image hotSpot:NSZeroPoint];
+    }
+    // Cursor rectangles belong to this view: leaving it or using another app
+    // restores that surface's cursor, without a process-wide hide/unhide count.
+    [self addCursorRect:self.bounds cursor:hidden];
+}
 - (void)mouseDown:(NSEvent *)e { [self mouseDragged:e]; }
 - (void)mouseDragged:(NSEvent *)e {
     if (!g_input_on) return;
@@ -294,6 +309,7 @@ void front_run(void (*guest)(void)) {
         g_layer.contentsScale = win.backingScaleFactor;
         if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) { g_layer.developerHUDProperties = @{@"mode": @"default"}; LOG("front end: Metal performance HUD on (DM_METAL_HUD)"); }   // Apple's HUD over the game: frame rate, frame and GPU time, memory
         v.layer = g_layer; [(DmGameView *)v fitDrawable];
+        if (getenv("DM_HIDE_CURSOR") && atoi(getenv("DM_HIDE_CURSOR"))) LOG("front end: cursor hidden inside the game view (DM_HIDE_CURSOR)");
         [win center];
         [win makeKeyAndOrderFront:nil];
         g_screen_fps = (int)(win.screen ?: NSScreen.mainScreen).maximumFramesPerSecond;

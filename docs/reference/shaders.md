@@ -593,6 +593,14 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [OCTOPATH TRAVELER II](../../dm/games/0100A3501946E000/README.md): from Castti's opening flashback and the battlefield of Hikari's opening on.
 - **Check:** found by bisecting with four runs started at once on copies of one save: `DM_NVN_PREDICT=0` fixed it, a look-ahead that compiled nothing did not, and of its parts only the state ops brought it back; four runs green before the fix, four right after it.
 
+### Full library warmup serialized independent loads
+
+- **Symptom:** even a warm-cache launch spends seconds opening every shader library before drawing.
+- **Cause:** all-mode warmup loaded independent libraries and functions one by one, interleaved with manifest pipeline creation. Persistent pipeline archives avoid recompiling bases but do not remove that per-process loading work.
+- **Fix:** `warm_all_shaders` prepares unique shader-map keys with a bounded worker group (up to eight by default, capped by active CPUs; `DM_PSO_WARM_JOBS=1..16`). Each shader has private reflection and state; shared function descriptors and C1 banks retain their locks, and dictionary writes are synchronized. After the workers join, one thread publishes the shaders and builds the same manifest and compute pipelines. No preparation is deferred into gameplay. Progress covers the remaining pipeline pass too.
+- **Check:** `t_warm_shaders` compares serial and overlapping loads, checking shader identity, reflection and exactly-once publication under Metal validation. Native launch comparisons use cloned copies of the same manifest, archive and save; timings and coverage are in the game note.
+- **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md), 13.0.3 Mac.
+
 ### A cold Metal cache looks like a long load
 
 - **Symptom:** the first boot sat on the loading clock for about a minute, the CPU idle, with every file read done after 12 s.

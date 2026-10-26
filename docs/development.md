@@ -14,6 +14,8 @@ The README covers packing and playing. This page is for working on nxnative itse
 | iOS app | One unsigned IPA for iPhone and iPad. The rewritten code is embedded in the executable; the shader libraries, the RomFS and the game icon are inside the app. A settings screen comes before the game (`Launcher.swift`, drawn from `dm/launcher.json`, which `dm/games/settings.py` writes from `dm/games/settings.tsv`); the host's loading starts at app launch meanwhile, and the frame rate and render scale go into the frame step state when the game starts (`loader.c` `dm_fps_state_apply`) |
 | Known gaps | Conditional render is always drawn; `MultiDraw*IndirectCount` waits on the CPU for the GPU-written count; geometry shaders do not translate. TBDR optimizations are off by default (they don't understand bindless textures yet). No amiibo. The bundled prewarm lists are empty. On the Mac, Mario's menu and dialogue text render blank (fine on the iPhone) |
 
+On the Mac, `DM_HIDE_CURSOR=1` makes the pointer transparent over the game picture. Other windows and surfaces keep their normal cursors; mouse-to-touch input still works. The default is visible.
+
 ## Guest memory SVCs
 
 `dm/host/hle_svc.c` serializes heap resizing, physical map/unmap, stack
@@ -298,7 +300,7 @@ During rendering, a pipeline miss compiles and caches the demanded pipeline befo
 
 ### Waiting for graphics warmup at launch
 
-`DM_PSO_PREWARM=blocking` prepares the bundled and user pipeline lists before the first draw uses them. `DM_PSO_PREWARM=all` additionally opens every translated shader library in the shader map, prepares its functions and builds every compute pipeline before rendering. The Mac window shows progress while the full library pass runs. With neither setting, warmup runs in the background as before. `DM_PSO_MANIFEST=off` still disables warmup.
+`DM_PSO_PREWARM=blocking` prepares the bundled and user pipeline lists before the first draw uses them. `DM_PSO_PREWARM=all` additionally opens every translated shader library in the shader map, prepares its functions and builds every compute pipeline before rendering. Independent library loads use up to eight workers, bounded by the active CPU count; `DM_PSO_WARM_JOBS=1..16` overrides the count (1 is the serial comparison). Completed libraries are published once, then the manifest pipelines use those same shader objects. The Mac window shows progress through both the libraries and the pipeline pass. With neither setting, warmup runs in the background as before. `DM_PSO_MANIFEST=off` still disables warmup.
 
 These modes preserve the normal user pipeline list and pipeline archives. They move known work to startup; they cannot enumerate every unseen render-state combination. On SSBU 13.0.3 / M4 Max, an app test prepared 35,012 shader libraries, all 53 compute pipelines and 1,108 recorded render pipelines in 15.7 seconds. See the [game note](../dm/games/01006A800016E000/README.md#local-mac-performance-and-save-testing-1303) for test conditions and limits. A new render-pipeline combination can still require a demand compile even after every shader library is loaded.
 
